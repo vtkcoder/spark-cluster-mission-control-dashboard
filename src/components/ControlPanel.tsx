@@ -277,7 +277,14 @@ export function ControlPanel({ containers }: { containers: ContainerStates }) {
               loading={loading["vllm-start"]}
               onClick={() => post("vllm-start", { model: selectedModel, maxModelLen: maxLen, gpuUtil })}
             />
-            {!stopConfirm ? (
+            {loading["vllm-stop"] ? (
+              <ActionButton
+                label="■ STOPPING…"
+                danger
+                loading
+                onClick={() => {}}
+              />
+            ) : !stopConfirm ? (
               <ActionButton
                 label="■ STOP CLUSTER"
                 danger
@@ -288,7 +295,6 @@ export function ControlPanel({ containers }: { containers: ContainerStates }) {
               <ActionButton
                 label="⚠ CONFIRM STOP"
                 confirming
-                loading={loading["vllm-stop"]}
                 onClick={() => { setStopConfirm(false); post("vllm-stop"); }}
               />
             )}

@@ -110,11 +110,18 @@ export async function POST(req: NextRequest) {
     };
 
     if (body.action === "vllm-stop") {
-      await Promise.allSettled([
-        execAsync("docker stop vllm-head 2>/dev/null; docker rm vllm-head 2>/dev/null", { timeout: 15000 }),
-        execAsync("ssh -o ConnectTimeout=5 -o BatchMode=yes spark2 'docker stop vllm-worker 2>/dev/null; docker rm vllm-worker 2>/dev/null'", { timeout: 15000 }),
+      const [headRes, workerRes] = await Promise.allSettled([
+        execAsync("docker rm -f vllm-head 2>&1 || true", { timeout: 20000 }),
+        execAsync("ssh -o ConnectTimeout=5 -o BatchMode=yes spark2 'docker rm -f vllm-worker 2>&1 || true'", { timeout: 20000 }),
       ]);
-      return NextResponse.json({ ok: true, message: "Cluster stopped and containers removed." });
+      const headOk = headRes.status === "fulfilled";
+      const workerOk = workerRes.status === "fulfilled";
+      const headOut = headOk ? (headRes.value as { stdout: string }).stdout.trim() : (headRes.reason as Error).message;
+      const workerOut = workerOk ? (workerRes.value as { stdout: string }).stdout.trim() : (workerRes.reason as Error).message;
+      if (!headOk && !workerOk) {
+        return NextResponse.json({ ok: false, error: `head: ${headOut} | worker: ${workerOut}` }, { status: 500 });
+      }
+      return NextResponse.json({ ok: true, message: `Cluster stopped. head=${headOk ? "removed" : "FAILED: " + headOut}, worker=${workerOk ? "removed" : "FAILED: " + workerOut}` });
     }
 
     if (body.action === "vllm-start") {
@@ -125,10 +132,10 @@ export async function POST(req: NextRequest) {
       const maxLen = body.maxModelLen ?? cfg.defaultMaxLen;
       const gpuUtil = body.gpuUtil ?? cfg.defaultGpuUtil;
 
-      // Stop + remove existing containers first (fire and forget errors)
+      // Force-remove existing containers before launching new ones
       await Promise.allSettled([
-        execAsync("docker stop vllm-head 2>/dev/null; docker rm vllm-head 2>/dev/null", { timeout: 12000 }),
-        execAsync("ssh -o ConnectTimeout=5 -o BatchMode=yes spark2 'docker stop vllm-worker 2>/dev/null; docker rm vllm-worker 2>/dev/null'", { timeout: 12000 }),
+        execAsync("docker rm -f vllm-head 2>/dev/null; true", { timeout: 15000 }),
+        execAsync("ssh -o ConnectTimeout=5 -o BatchMode=yes spark2 'docker rm -f vllm-worker 2>/dev/null; true'", { timeout: 15000 }),
       ]);
 
       const headCmd = buildHeadCmd(model, maxLen, gpuUtil);

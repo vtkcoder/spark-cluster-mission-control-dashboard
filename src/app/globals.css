@@ -79,6 +79,12 @@
   color: var(--text-dim);
 }
 
+/* Chat cursor blink */
+@keyframes cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
 /* Grid scan line overlay */
 .scanlines {
   background-image: repeating-linear-gradient(

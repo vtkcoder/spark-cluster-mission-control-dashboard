@@ -9,6 +9,7 @@ import { SystemTasksPanel } from "@/components/SystemTasksPanel";
 import { ControlPanel } from "@/components/ControlPanel";
 import { Pm2Panel } from "@/components/Pm2Panel";
 import { LogsPanel } from "@/components/LogsPanel";
+import { ChatPanel } from "@/components/ChatPanel";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface GpuData {
@@ -96,7 +97,7 @@ export default function DashPage() {
   });
   const [tasksData, setTasksData] = useState<TasksData | null>(null);
   const [tasksLoading, setTasksLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<"overview" | "tasks" | "control" | "pm2" | "logs">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "tasks" | "control" | "pm2" | "logs" | "chat">("overview");
   const tasksHasData = useRef(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -292,8 +293,8 @@ export default function DashPage() {
           padding: "0 20px",
         }}
       >
-        {(["overview", "tasks", "control", "pm2", "logs"] as const).map((tab) => {
-          const labels: Record<string, string> = { overview: "OVERVIEW", tasks: "SYSTEM TASKS", control: "CLUSTER CONTROL", pm2: "PM2", logs: "LOGS" };
+        {(["overview", "tasks", "control", "pm2", "logs", "chat"] as const).map((tab) => {
+          const labels: Record<string, string> = { overview: "OVERVIEW", tasks: "SYSTEM TASKS", control: "CLUSTER CONTROL", pm2: "PM2", logs: "LOGS", chat: "CHAT" };
           const active = activeTab === tab;
           return (
             <button
@@ -440,6 +441,17 @@ export default function DashPage() {
               ▸ LOG VIEWER
             </div>
             <LogsPanel />
+          </section>
+        )}
+
+        {/* ── CHAT TAB ── */}
+        {activeTab === "chat" && (
+          <section style={{ position: "relative" }}>
+            <ChatPanel
+              vllmOnline={data?.vllm.online ?? false}
+              modelName={data?.vllm.model ?? null}
+              maxModelLen={data?.vllm.maxModelLen ?? null}
+            />
           </section>
         )}
 
