@@ -25,6 +25,45 @@ const PRESETS = [
   { label: "Add gpt-oss-120b", task: "Start downloading openai/gpt-oss-120b to the HF cache using ~/.local/bin/hf download openai/gpt-oss-120b, background it with nohup, log to ~/gpt-oss-120b-download.log. Then add it to KNOWN_EXPECTED_BYTES and KNOWN_MODELS in the dashboard with correct defaults (MXFP4 ~80GB, maxLen 32768, gpuUtil 0.88, maxContextSlider 131072). Build, restart, commit, push." },
 ];
 
+// 5-pixel scanning wave: bounces left→right with 3 brightness levels
+const SCAN_FRAMES: number[][] = [
+  [2, 1, 0, 0, 0],
+  [1, 2, 1, 0, 0],
+  [0, 1, 2, 1, 0],
+  [0, 0, 1, 2, 1],
+  [0, 0, 0, 1, 2],
+  [0, 0, 1, 2, 1],
+  [0, 1, 2, 1, 0],
+  [1, 2, 1, 0, 0],
+];
+const SCAN_COLORS = ["#12102a", "#5b21b6", "#c4b5fd"];
+
+function PixelSpinner() {
+  const [frame, setFrame] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setFrame((f) => (f + 1) % SCAN_FRAMES.length), 100);
+    return () => clearInterval(id);
+  }, []);
+  return (
+    <span style={{ display: "inline-flex", gap: 2, alignItems: "center", verticalAlign: "middle", marginLeft: 6 }}>
+      {SCAN_FRAMES[frame].map((level, i) => (
+        <span
+          key={i}
+          style={{
+            display: "inline-block",
+            width: 5,
+            height: 5,
+            borderRadius: 1,
+            background: SCAN_COLORS[level],
+            boxShadow: level === 2 ? "0 0 6px #8b5cf6cc" : "none",
+            transition: "background 0.08s, box-shadow 0.08s",
+          }}
+        />
+      ))}
+    </span>
+  );
+}
+
 function ElapsedTimer({ startedAt }: { startedAt: number }) {
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
@@ -164,9 +203,8 @@ export function AgentPanel() {
             {state.response ? (
               state.response
             ) : isRunning ? (
-              <span style={{ color: "#6b7280", fontStyle: "italic" }}>
-                Agent is working
-                <span style={{ color: "#8b5cf6", animation: "pulse-ring 1s ease-out infinite" }}> █</span>
+              <span style={{ color: "#6b7280", fontStyle: "italic", display: "inline-flex", alignItems: "center" }}>
+                Agent is working<PixelSpinner />
               </span>
             ) : (
               <span style={{ color: "#334155", fontStyle: "italic" }}>No response yet.</span>
@@ -245,9 +283,7 @@ export function AgentPanel() {
                 }}
               >
                 {state.agentLog || <span style={{ color: "#334155", fontStyle: "italic" }}>Waiting for output…</span>}
-                {isRunning && (
-                  <span style={{ color: "#8b5cf6", animation: "pulse-ring 1s ease-out infinite" }}>█</span>
-                )}
+                {isRunning && <PixelSpinner />}
               </div>
             </>
           )}
