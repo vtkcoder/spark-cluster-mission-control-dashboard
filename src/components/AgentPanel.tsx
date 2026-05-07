@@ -6,7 +6,8 @@ interface AgentState {
   id: string | null;
   status: "idle" | "running" | "done" | "error";
   task: string | null;
-  output: string;
+  agentLog: string;
+  response: string;
   exitCode: number | null;
   startedAt: number | null;
   finishedAt: number | null;
@@ -37,15 +38,16 @@ function ElapsedTimer({ startedAt }: { startedAt: number }) {
 
 export function AgentPanel() {
   const [state, setState] = useState<AgentState>({
-    id: null, status: "idle", task: null, output: "", exitCode: null,
-    startedAt: null, finishedAt: null, pid: null,
+    id: null, status: "idle", task: null, agentLog: "", response: "",
+    exitCode: null, startedAt: null, finishedAt: null, pid: null,
   });
   const [taskInput, setTaskInput] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
-  const outputRef = useRef<HTMLDivElement>(null);
+  const [logOpen, setLogOpen] = useState(false);
+  const logRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
-  const prevOutputLen = useRef(0);
+  const prevLogLen = useRef(0);
 
   const poll = useCallback(async () => {
     try {
@@ -54,7 +56,6 @@ export function AgentPanel() {
     } catch { /* ignore */ }
   }, []);
 
-  // Poll fast when running, slow when idle/done
   useEffect(() => {
     poll();
     const interval = state.status === "running" ? 1500 : 8000;
@@ -62,19 +63,20 @@ export function AgentPanel() {
     return () => clearInterval(id);
   }, [poll, state.status]);
 
-  // Auto-scroll output when new content arrives
+  // Auto-scroll log when new content arrives
   useEffect(() => {
-    if (!autoScroll || !outputRef.current) return;
-    if (state.output.length !== prevOutputLen.current) {
-      prevOutputLen.current = state.output.length;
-      outputRef.current.scrollTop = outputRef.current.scrollHeight;
+    if (!autoScroll || !logRef.current || !logOpen) return;
+    if (state.agentLog.length !== prevLogLen.current) {
+      prevLogLen.current = state.agentLog.length;
+      logRef.current.scrollTop = logRef.current.scrollHeight;
     }
-  }, [state.output, autoScroll]);
+  }, [state.agentLog, autoScroll, logOpen]);
 
   const submit = async (task: string) => {
     if (!task.trim() || submitting) return;
     setSubmitting(true);
     setFeedback(null);
+    setLogOpen(false);
     try {
       const res = await fetch("/api/agent", {
         method: "POST",
@@ -107,6 +109,7 @@ export function AgentPanel() {
     : "IDLE";
 
   const isRunning = state.status === "running";
+  const hasResult = state.status === "done" || state.status === "error" || !!state.response;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -114,7 +117,7 @@ export function AgentPanel() {
       {/* ── Agent identity card ── */}
       <div style={{ background: "#0c1220", border: "1px solid #2a1f50", borderRadius: 12, padding: 16, position: "relative", overflow: "hidden" }}>
         <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 2, background: "linear-gradient(90deg, #8b5cf6, #3b82f688, #10b98166, transparent)" }} />
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: state.task ? 10 : 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <div style={{ width: 32, height: 32, borderRadius: 8, background: "linear-gradient(135deg, #8b5cf6, #3b82f6)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, boxShadow: "0 0 12px #8b5cf644" }}>
               ◈
@@ -131,22 +134,125 @@ export function AgentPanel() {
               </span>
             )}
             <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", borderRadius: 20, background: `${statusColor}12`, border: `1px solid ${statusColor}33` }}>
-              <div style={{
-                width: 6, height: 6, borderRadius: "50%", background: statusColor,
-                ...(isRunning ? {} : {}),
-              }} className={isRunning ? "pulse-dot" : ""} />
+              <div style={{ width: 6, height: 6, borderRadius: "50%", background: statusColor }} className={isRunning ? "pulse-dot" : ""} />
               <span style={{ fontSize: 10, color: statusColor, fontWeight: 700, letterSpacing: "0.1em" }}>{statusLabel}</span>
             </div>
           </div>
         </div>
 
-        {/* Current task display */}
         {state.task && (
           <div style={{ background: "#080c14", border: "1px solid #1a2540", borderRadius: 6, padding: "8px 12px", fontSize: 11, color: isRunning ? "#a78bfa" : "#64748b", fontStyle: "italic" }}>
             {state.task}
           </div>
         )}
       </div>
+
+      {/* ── Response card (prominent, always visible when there's content) ── */}
+      {(isRunning || hasResult) && (
+        <div style={{ background: "#0c1220", border: `1px solid ${state.status === "error" ? "#7f1d1d" : state.status === "done" ? "#064e3b" : "#2a1f50"}`, borderRadius: 12, overflow: "hidden" }}>
+          <div style={{ background: "#0a1018", borderBottom: `1px solid ${state.status === "error" ? "#7f1d1d" : state.status === "done" ? "#064e3b" : "#1a2540"}`, padding: "10px 16px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: 10, letterSpacing: "0.12em", color: state.status === "done" ? "#10b981" : state.status === "error" ? "#ef4444" : "#8b5cf6", textTransform: "uppercase", fontWeight: 700 }}>
+              {state.status === "done" ? "✓ RESPONSE" : state.status === "error" ? "✗ RESPONSE" : "◈ WORKING…"}
+            </span>
+            {state.finishedAt && state.startedAt && (
+              <span style={{ fontSize: 9, color: "#334155" }}>
+                {((state.finishedAt - state.startedAt) / 1000).toFixed(1)}s
+              </span>
+            )}
+          </div>
+          <div style={{ padding: "16px 20px", minHeight: 80, fontSize: 13, lineHeight: 1.75, color: "#e2e8f0", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+            {state.response ? (
+              state.response
+            ) : isRunning ? (
+              <span style={{ color: "#6b7280", fontStyle: "italic" }}>
+                Agent is working
+                <span style={{ color: "#8b5cf6", animation: "pulse-ring 1s ease-out infinite" }}> █</span>
+              </span>
+            ) : (
+              <span style={{ color: "#334155", fontStyle: "italic" }}>No response yet.</span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Collapsible agent log ── */}
+      {(state.agentLog || isRunning) && (
+        <div style={{ background: "#0c1220", border: "1px solid #1a2540", borderRadius: 12, overflow: "hidden" }}>
+          <button
+            onClick={() => { setLogOpen((o) => !o); }}
+            style={{
+              width: "100%",
+              background: "#0a1018",
+              border: "none",
+              borderBottom: logOpen ? "1px solid #1a2540" : "none",
+              padding: "10px 16px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              cursor: "pointer",
+              fontFamily: "inherit",
+            }}
+          >
+            <span style={{ fontSize: 10, letterSpacing: "0.12em", color: "#475569", textTransform: "uppercase" }}>
+              {logOpen ? "▾" : "▸"} AGENT LOG
+            </span>
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              {isRunning && (
+                <span style={{ fontSize: 9, color: "#8b5cf6" }}>live</span>
+              )}
+              <span style={{ fontSize: 9, color: "#334155" }}>{logOpen ? "collapse" : "expand"}</span>
+            </div>
+          </button>
+
+          {logOpen && (
+            <>
+              <div style={{ padding: "4px 16px 4px", display: "flex", justifyContent: "flex-end", background: "#060910", borderBottom: "1px solid #0f1520" }}>
+                <button
+                  onClick={() => setAutoScroll((a) => !a)}
+                  style={{
+                    background: autoScroll ? "#1e3a5f" : "#0a1018",
+                    border: `1px solid ${autoScroll ? "#3b82f644" : "#1a2540"}`,
+                    borderRadius: 4,
+                    padding: "2px 8px",
+                    cursor: "pointer",
+                    fontSize: 9,
+                    color: autoScroll ? "#60a5fa" : "#475569",
+                    fontFamily: "inherit",
+                    letterSpacing: "0.06em",
+                  }}
+                >
+                  {autoScroll ? "AUTO-SCROLL ON" : "AUTO-SCROLL OFF"}
+                </button>
+              </div>
+              <div
+                ref={logRef}
+                onScroll={(e) => {
+                  const el = e.currentTarget;
+                  const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+                  setAutoScroll(atBottom);
+                }}
+                style={{
+                  padding: "12px 16px",
+                  height: 360,
+                  overflowY: "auto",
+                  fontFamily: "'Courier New', 'Consolas', monospace",
+                  fontSize: 11,
+                  lineHeight: 1.6,
+                  color: "#64748b",
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-word",
+                  background: "#060910",
+                }}
+              >
+                {state.agentLog || <span style={{ color: "#334155", fontStyle: "italic" }}>Waiting for output…</span>}
+                {isRunning && (
+                  <span style={{ color: "#8b5cf6", animation: "pulse-ring 1s ease-out infinite" }}>█</span>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {/* ── Quick task presets ── */}
       <div style={{ background: "#0c1220", border: "1px solid #1a2540", borderRadius: 12, overflow: "hidden" }}>
@@ -257,62 +363,6 @@ export function AgentPanel() {
         </div>
       </div>
 
-      {/* ── Output viewer ── */}
-      {(state.output || state.status !== "idle") && (
-        <div style={{ background: "#0c1220", border: "1px solid #1a2540", borderRadius: 12, overflow: "hidden" }}>
-          <div style={{ background: "#0a1018", borderBottom: "1px solid #1a2540", padding: "10px 16px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <span style={{ fontSize: 10, letterSpacing: "0.12em", color: "#475569", textTransform: "uppercase" }}>▸ AGENT OUTPUT</span>
-            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-              {state.finishedAt && state.startedAt && (
-                <span style={{ fontSize: 9, color: "#334155" }}>
-                  {((state.finishedAt - state.startedAt) / 1000).toFixed(1)}s
-                </span>
-              )}
-              <button
-                onClick={() => setAutoScroll((a) => !a)}
-                style={{
-                  background: autoScroll ? "#1e3a5f" : "#0a1018",
-                  border: `1px solid ${autoScroll ? "#3b82f644" : "#1a2540"}`,
-                  borderRadius: 4,
-                  padding: "2px 8px",
-                  cursor: "pointer",
-                  fontSize: 9,
-                  color: autoScroll ? "#60a5fa" : "#475569",
-                  fontFamily: "inherit",
-                  letterSpacing: "0.06em",
-                }}
-              >
-                {autoScroll ? "AUTO-SCROLL ON" : "AUTO-SCROLL OFF"}
-              </button>
-            </div>
-          </div>
-          <div
-            ref={outputRef}
-            onScroll={(e) => {
-              const el = e.currentTarget;
-              const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-              setAutoScroll(atBottom);
-            }}
-            style={{
-              padding: "12px 16px",
-              height: 420,
-              overflowY: "auto",
-              fontFamily: "'Courier New', 'Consolas', monospace",
-              fontSize: 11,
-              lineHeight: 1.6,
-              color: "#94a3b8",
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-word",
-              background: "#060910",
-            }}
-          >
-            {state.output || <span style={{ color: "#334155", fontStyle: "italic" }}>Waiting for output…</span>}
-            {isRunning && (
-              <span style={{ color: "#8b5cf6", animation: "pulse-ring 1s ease-out infinite" }}>█</span>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

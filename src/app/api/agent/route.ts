@@ -5,14 +5,15 @@ export const dynamic = "force-dynamic";
 
 const CLAUDE_BIN = "/home/absolome/.npm-global/bin/claude";
 const WORK_DIR = "/home/absolome/sites/cluster-dash";
-const MAX_OUTPUT_CHARS = 80_000; // trim oldest output if it grows beyond this
+const MAX_LOG_CHARS = 120_000;
 
 // ── Persistent job state (module-level — PM2 keeps this process alive) ────────
 interface AgentJob {
   id: string;
   task: string;
   status: "running" | "done" | "error";
-  output: string;
+  agentLog: string;    // tool calls, tool results, assistant work events
+  response: string;    // clean final response from result event
   exitCode: number | null;
   startedAt: number;
   finishedAt: number | null;
@@ -21,21 +22,88 @@ interface AgentJob {
 
 let currentJob: AgentJob | null = null;
 let child: ChildProcess | null = null;
+let lineBuffer = "";
 
-function appendOutput(text: string) {
+function appendLog(text: string) {
   if (!currentJob) return;
-  currentJob.output += text;
-  if (currentJob.output.length > MAX_OUTPUT_CHARS) {
-    currentJob.output =
-      "[...older output trimmed...]\n" +
-      currentJob.output.slice(-MAX_OUTPUT_CHARS + 500);
+  currentJob.agentLog += text;
+  if (currentJob.agentLog.length > MAX_LOG_CHARS) {
+    currentJob.agentLog =
+      "[...older log trimmed...]\n" +
+      currentJob.agentLog.slice(-MAX_LOG_CHARS + 500);
   }
+}
+
+// Parse a stream-json line and route it to agentLog or response
+function handleJsonLine(line: string) {
+  if (!currentJob || !line.trim()) return;
+  let evt: Record<string, unknown>;
+  try {
+    evt = JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    // Not JSON (e.g. progress dots) — dump to log
+    appendLog(line + "\n");
+    return;
+  }
+
+  const type = evt.type as string;
+
+  if (type === "result") {
+    // Final response — store clean and also log it
+    const text = (evt.result as string | undefined) ?? "";
+    currentJob.response = text;
+    appendLog(`\n[RESULT]\n${text}\n`);
+    return;
+  }
+
+  if (type === "assistant") {
+    const msg = evt.message as { content?: unknown[] } | undefined;
+    const content = msg?.content ?? [];
+    for (const block of content) {
+      const b = block as Record<string, unknown>;
+      if (b.type === "text") {
+        appendLog(`[thinking] ${b.text as string}\n`);
+      } else if (b.type === "tool_use") {
+        const input = JSON.stringify(b.input ?? {});
+        appendLog(`[tool:${b.name as string}] ${input.slice(0, 300)}${input.length > 300 ? "…" : ""}\n`);
+      }
+    }
+    return;
+  }
+
+  if (type === "user") {
+    const msg = evt.message as { content?: unknown[] } | undefined;
+    const content = msg?.content ?? [];
+    for (const block of content) {
+      const b = block as Record<string, unknown>;
+      if (b.type === "tool_result") {
+        const inner = b.content;
+        let text = "";
+        if (typeof inner === "string") {
+          text = inner;
+        } else if (Array.isArray(inner)) {
+          text = (inner as Array<Record<string, unknown>>)
+            .filter((x) => x.type === "text")
+            .map((x) => x.text as string)
+            .join("\n");
+        }
+        if (text) {
+          const preview = text.slice(0, 400);
+          appendLog(`[result] ${preview}${text.length > 400 ? `…(+${text.length - 400} chars)` : ""}\n`);
+        }
+      }
+    }
+    return;
+  }
+
+  // system, init, etc. — just note the type
+  appendLog(`[${type}]\n`);
 }
 
 // ── GET — return current job state ───────────────────────────────────────────
 export async function GET() {
   return NextResponse.json(
-    currentJob ?? { status: "idle", output: "", task: null, id: null }
+    currentJob ?? { status: "idle", agentLog: "", response: "", task: null, id: null }
   );
 }
 
@@ -55,25 +123,23 @@ export async function POST(req: NextRequest) {
   }
 
   const jobId = `job-${Date.now()}`;
+  lineBuffer = "";
   currentJob = {
     id: jobId,
     task,
     status: "running",
-    output: "",
+    agentLog: `[AGENT STARTED — ${new Date().toISOString()}]\n[TASK] ${task}\n${"─".repeat(60)}\n\n`,
+    response: "",
     exitCode: null,
     startedAt: Date.now(),
     finishedAt: null,
     pid: null,
   };
 
-  appendOutput(`[AGENT STARTED — ${new Date().toISOString()}]\n`);
-  appendOutput(`[TASK] ${task}\n`);
-  appendOutput(`${"─".repeat(60)}\n\n`);
-
   try {
     child = spawn(
       CLAUDE_BIN,
-      ["--dangerously-skip-permissions", "-p", task],
+      ["--dangerously-skip-permissions", "--output-format", "stream-json", "-p", task],
       {
         cwd: WORK_DIR,
         env: {
@@ -89,21 +155,25 @@ export async function POST(req: NextRequest) {
     currentJob.pid = child.pid ?? null;
 
     child.stdout?.on("data", (chunk: Buffer) => {
-      appendOutput(chunk.toString());
+      lineBuffer += chunk.toString();
+      const lines = lineBuffer.split("\n");
+      lineBuffer = lines.pop() ?? "";
+      for (const line of lines) handleJsonLine(line);
     });
 
     child.stderr?.on("data", (chunk: Buffer) => {
-      appendOutput(chunk.toString());
+      appendLog(`[stderr] ${chunk.toString()}`);
     });
 
     child.on("close", (code) => {
       if (!currentJob) return;
+      // Flush any remaining buffer
+      if (lineBuffer.trim()) { handleJsonLine(lineBuffer); lineBuffer = ""; }
       currentJob.exitCode = code;
       currentJob.status = code === 0 ? "done" : "error";
       currentJob.finishedAt = Date.now();
       const elapsed = ((currentJob.finishedAt - currentJob.startedAt) / 1000).toFixed(1);
-      appendOutput(`\n${"─".repeat(60)}\n`);
-      appendOutput(`[AGENT ${currentJob.status.toUpperCase()} — exit ${code} — ${elapsed}s elapsed]\n`);
+      appendLog(`\n${"─".repeat(60)}\n[AGENT ${currentJob.status.toUpperCase()} — exit ${code} — ${elapsed}s]\n`);
       child = null;
     });
 
@@ -111,12 +181,12 @@ export async function POST(req: NextRequest) {
       if (!currentJob) return;
       currentJob.status = "error";
       currentJob.finishedAt = Date.now();
-      appendOutput(`\n[SPAWN ERROR] ${err.message}\n`);
+      appendLog(`\n[SPAWN ERROR] ${err.message}\n`);
       child = null;
     });
   } catch (err: unknown) {
     currentJob.status = "error";
-    currentJob.output += `\n[FATAL] ${(err as Error).message}\n`;
+    currentJob.agentLog += `\n[FATAL] ${(err as Error).message}\n`;
     child = null;
   }
 
@@ -140,7 +210,7 @@ export async function DELETE() {
 
   currentJob.status = "error";
   currentJob.finishedAt = Date.now();
-  appendOutput("\n[KILLED BY USER]\n");
+  appendLog("\n[KILLED BY USER]\n");
 
   return NextResponse.json({ ok: true });
 }
