@@ -74,6 +74,7 @@ function buildHeadCmd(model: string, maxLen: number, gpuUtil: number): string {
     "--tensor-parallel-size 2",
     `--gpu-memory-utilization ${gpuUtil}`,
     `--max-model-len ${maxLen} --kv-cache-dtype fp8 --enforce-eager`,
+    "--enable-auto-tool-choice --tool-call-parser qwen3_xml",
     "--host 0.0.0.0 --port 11434",
   ].join(" \\\n  ");
 }
@@ -93,6 +94,7 @@ function buildWorkerCmd(model: string, maxLen: number, gpuUtil: number): string 
     "--tensor-parallel-size 2",
     `--gpu-memory-utilization ${gpuUtil}`,
     `--max-model-len ${maxLen} --kv-cache-dtype fp8 --enforce-eager`,
+    "--enable-auto-tool-choice --tool-call-parser qwen3_xml",
     "--host 0.0.0.0 --port 11434",
   ].join(" \\\n  ");
 }
