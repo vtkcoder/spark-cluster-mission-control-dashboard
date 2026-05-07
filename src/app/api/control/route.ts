@@ -15,10 +15,11 @@ const VLLM_IMAGE = "nvcr.io/nvidia/vllm:26.04-py3";
 // optimal launch parameters. Unknown models fall back to safe generic defaults.
 interface ModelDefaults {
   displayName: string;
-  expectedGb: number;        // on-disk FP8/quant size — used for readiness check
+  expectedGb: number;
   defaultMaxLen: number;
   defaultGpuUtil: number;
-  maxContextSlider: number;  // upper bound for the context slider in the UI
+  maxGpuUtil: number;        // per-model hard ceiling for the GPU util slider
+  maxContextSlider: number;
   note: string;
 }
 
@@ -28,6 +29,7 @@ const KNOWN_MODELS: Record<string, ModelDefaults> = {
     expectedGb: 220,
     defaultMaxLen: 5680,
     defaultGpuUtil: 0.926,
+    maxGpuUtil: 0.926,
     maxContextSlider: 7168,
     note: "5,680 ctx — GPU memory bound",
   },
@@ -36,6 +38,7 @@ const KNOWN_MODELS: Record<string, ModelDefaults> = {
     expectedGb: 75,
     defaultMaxLen: 65536,
     defaultGpuUtil: 0.88,
+    maxGpuUtil: 0.926,
     maxContextSlider: 65536,
     note: "65K ctx · 80B MoE coding model",
   },
@@ -44,6 +47,7 @@ const KNOWN_MODELS: Record<string, ModelDefaults> = {
     expectedGb: 122,
     defaultMaxLen: 65536,
     defaultGpuUtil: 0.91,
+    maxGpuUtil: 0.926,
     maxContextSlider: 65536,
     note: "65K context",
   },
@@ -52,6 +56,7 @@ const KNOWN_MODELS: Record<string, ModelDefaults> = {
     expectedGb: 80,
     defaultMaxLen: 32768,
     defaultGpuUtil: 0.88,
+    maxGpuUtil: 0.926,
     maxContextSlider: 131072,
     note: "120B MoE · 5.1B active · 256K ctx",
   },
@@ -113,6 +118,7 @@ function getModels() {
       currentGb: Math.round(currentGb * 10) / 10,
       defaultMaxLen: known?.defaultMaxLen ?? 8192,
       defaultGpuUtil: known?.defaultGpuUtil ?? 0.85,
+      maxGpuUtil: known?.maxGpuUtil ?? 0.91,
       maxContextSlider: known?.maxContextSlider ?? 32768,
       note: known?.note ?? "Unknown model — using generic defaults",
       ready,

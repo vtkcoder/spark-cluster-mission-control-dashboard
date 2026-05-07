@@ -427,6 +427,8 @@ export default function DashPage() {
             <ControlPanel
               containers={data?.vllm.containers ?? { head: "absent", worker: "absent", webui: "absent" }}
               vllmMaxModelLen={data?.vllm.maxModelLen ?? null}
+              vllmModel={data?.vllm.model ?? null}
+              vllmOnline={data?.vllm.online ?? false}
             />
           </section>
         )}

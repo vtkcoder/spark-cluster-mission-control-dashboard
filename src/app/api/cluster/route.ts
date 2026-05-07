@@ -127,7 +127,11 @@ async function getVllmModels(): Promise<{ model: string; maxModelLen: number | n
     const data = await res.json() as { data: VllmModel[] };
     if (!data.data?.length) return null;
     const m = data.data[0];
-    return { model: m.id, maxModelLen: m.max_model_len ?? null };
+    // Normalize snapshot path → "Org/Model-Name"
+    const raw = m.id;
+    const snap = raw.match(/models--([^/]+)--([^/]+)\/snapshots/);
+    const model = snap ? `${snap[1]}/${snap[2]}` : raw;
+    return { model, maxModelLen: m.max_model_len ?? null };
   } catch {
     return null;
   }
