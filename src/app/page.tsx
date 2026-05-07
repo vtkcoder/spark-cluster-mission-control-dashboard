@@ -56,8 +56,7 @@ interface VllmData {
 
 interface DownloadData {
   model: string;
-  spark1Bytes: number;
-  spark2Bytes: number;
+  bytes: number;
   expectedBytes: number;
   active: boolean;
   dlSpeedS1: number;
@@ -68,7 +67,7 @@ interface ClusterData {
   ts: number;
   nodes: { spark1: NodeData | null; spark2: NodeData | null };
   vllm: VllmData;
-  download: DownloadData | null;
+  downloads: DownloadData[];
 }
 
 // ── History buffer ────────────────────────────────────────────────────────────
@@ -393,12 +392,12 @@ export default function DashPage() {
             </section>
 
             {/* Download panel */}
-            {data?.download && (
+            {data?.downloads && data.downloads.length > 0 && (
               <section>
                 <div style={{ fontSize: 9, color: "#334155", letterSpacing: "0.14em", marginBottom: 8, textTransform: "uppercase" }}>
-                  ▸ MODEL DOWNLOAD
+                  ▸ MODEL DOWNLOADS
                 </div>
-                <DownloadPanel data={data.download} />
+                <DownloadPanel downloads={data.downloads} />
               </section>
             )}
           </>

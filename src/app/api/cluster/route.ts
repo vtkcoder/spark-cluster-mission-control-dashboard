@@ -193,11 +193,34 @@ async function getNetworkRx(iface: string, remote: boolean): Promise<number> {
 // ── Download speed tracking (module-level cache) ──────────────────────────────
 let prevRx: { spark1: number; spark2: number; ts: number } | null = null;
 
+// ── Model download configs ────────────────────────────────────────────────────
+const HF_HUB = "/home/absolome/.cache/huggingface/hub";
+const TRACKED_MODELS = [
+  {
+    model: "Qwen/Qwen3-Coder-Next-FP8",
+    dir: `${HF_HUB}/models--Qwen--Qwen3-Coder-Next-FP8`,
+    expectedBytes: 85_899_345_920, // ~80 GiB FP8; update once complete
+  },
+  {
+    model: "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8",
+    dir: `${HF_HUB}/models--Qwen--Qwen3-235B-A22B-Instruct-2507-FP8`,
+    expectedBytes: 236_449_103_093, // measured complete on-disk size
+  },
+];
+
 // ── Main handler ──────────────────────────────────────────────────────────────
 export async function GET() {
-  const MODEL_DIR = "/home/absolome/.cache/huggingface/hub/models--Qwen--Qwen3.5-122B-A10B-FP8";
-  const EXPECTED_BYTES = 127_195_722_339; // measured on-disk size of complete download
   const NET_IFACE = "enP7s7"; // WAN interface
+
+  // Fetch model disk bytes + incomplete status for each tracked model (spark1 only;
+  // spark2 reads via NFS so byte counts are identical)
+  const modelChecks = await Promise.all(
+    TRACKED_MODELS.map(async (m) => ({
+      ...m,
+      bytes: await getDiskBytes(m.dir, false),
+      active: await hasIncompleteBlobs(m.dir, false),
+    }))
+  );
 
   const [
     spark1,
@@ -208,8 +231,6 @@ export async function GET() {
     workerStatus,
     webuiStatus,
     headUptime,
-    s1DownBytes,
-    s1Incomplete,
     s1RxBytes,
     s2RxBytes,
   ] = await Promise.all([
@@ -221,14 +242,11 @@ export async function GET() {
     getDockerStatus("vllm-worker", true),
     getDockerStatus("open-webui", false),
     getDockerUptime("vllm-head", false),
-    getDiskBytes(MODEL_DIR, false),
-    // spark2 reads the same model via NFS from spark1 — no separate byte count needed
-    hasIncompleteBlobs(MODEL_DIR, false),
     getNetworkRx(NET_IFACE, false),
     getNetworkRx(NET_IFACE, true),
   ]);
 
-  // Network speed (bytes/sec since last poll)
+  // Network speed (bytes/sec since last poll) — applies to whichever model is active
   const now = Date.now();
   let dlSpeedS1 = 0;
   let dlSpeedS2 = 0;
@@ -241,7 +259,17 @@ export async function GET() {
   }
   prevRx = { spark1: s1RxBytes, spark2: s2RxBytes, ts: now };
 
-  const downloadActive = s1Incomplete;
+  // Only surface models that are actively downloading or partially downloaded
+  const activeDownloads = modelChecks
+    .filter((m) => m.active || (m.bytes > 0 && m.bytes < m.expectedBytes))
+    .map((m) => ({
+      model: m.model,
+      bytes: m.bytes,
+      expectedBytes: m.expectedBytes,
+      active: m.active,
+      dlSpeedS1,
+      dlSpeedS2,
+    }));
 
   return NextResponse.json({
     ts: now,
@@ -313,17 +341,6 @@ export async function GET() {
           }
         : null,
     },
-    download:
-      downloadActive || (s1DownBytes > 0 && s1DownBytes < EXPECTED_BYTES)
-        ? {
-            model: "Qwen/Qwen3.5-122B-A10B-FP8",
-            spark1Bytes: s1DownBytes,
-            spark2Bytes: s1DownBytes,
-            expectedBytes: EXPECTED_BYTES,
-            active: downloadActive,
-            dlSpeedS1,
-            dlSpeedS2,
-          }
-        : null,
+    downloads: activeDownloads,
   });
 }
