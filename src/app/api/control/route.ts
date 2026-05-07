@@ -33,7 +33,7 @@ const KNOWN_MODELS: Record<string, ModelDefaults> = {
   },
   "Qwen/Qwen3-Coder-Next-FP8": {
     displayName: "Qwen3-Coder-Next",
-    expectedGb: 80,
+    expectedGb: 75,
     defaultMaxLen: 32768,
     defaultGpuUtil: 0.88,
     maxContextSlider: 65536,
@@ -85,17 +85,16 @@ function getModels() {
     const blobsDir = join(dir, "blobs");
     const known = KNOWN_MODELS[id];
 
-    const incompleteCount = existsSync(blobsDir)
-      ? readdirSync(blobsDir).filter((f) => f.endsWith(".incomplete")).length
-      : 0;
+    const blobs = existsSync(blobsDir) ? readdirSync(blobsDir) : [];
+    const incompleteCount = blobs.filter((f) => f.endsWith(".incomplete")).length;
+    const completeCount = blobs.filter((f) => !f.endsWith(".incomplete")).length;
 
     const currentGb = dirBytes(dir) / 1073741824;
     const expectedGb = known?.expectedGb ?? 0;
 
-    // Ready: no incomplete blobs AND (size ≥ 95% of expected OR expected unknown)
-    const ready =
-      incompleteCount === 0 &&
-      (expectedGb === 0 || currentGb >= expectedGb * 0.95);
+    // Ready: no incomplete blobs AND at least one complete blob present.
+    // The .incomplete flag is the authoritative HF cache signal — don't gate on size.
+    const ready = incompleteCount === 0 && completeCount > 0;
 
     const downloadPct =
       expectedGb > 0
