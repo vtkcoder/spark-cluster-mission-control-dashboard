@@ -21,9 +21,9 @@ const MODEL_CONFIGS: Record<string, { displayName: string; expectedGb: number; d
   "Qwen/Qwen3.5-122B-A10B-FP8": {
     displayName: "Qwen3.5-122B-A10B",
     expectedGb: 122,
-    defaultMaxLen: 32768,
-    defaultGpuUtil: 0.93,
-    note: "32K context",
+    defaultMaxLen: 65536,
+    defaultGpuUtil: 0.91,
+    note: "65K context",
   },
 };
 
@@ -67,6 +67,7 @@ function buildHeadCmd(model: string, maxLen: number, gpuUtil: number): string {
     "-v /tmp/vllm_multiproc.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/executor/multiproc_executor.py:ro",
     "-e NCCL_SOCKET_IFNAME=enp1s0f1np1 -e UCX_NET_DEVICES=enp1s0f1np1",
     "-e GLOO_SOCKET_IFNAME=enp1s0f1np1 -e VLLM_HOST_IP=192.168.100.10",
+    "-e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1",
     `--name vllm-head ${VLLM_IMAGE}`,
     `vllm serve ${model}`,
     "--nnodes 2 --node-rank 0 --master-addr 192.168.100.10 --master-port 29501",
@@ -85,6 +86,7 @@ function buildWorkerCmd(model: string, maxLen: number, gpuUtil: number): string 
     "-v /tmp/vllm_multiproc.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/executor/multiproc_executor.py:ro",
     "-e NCCL_SOCKET_IFNAME=enp1s0f1np1 -e UCX_NET_DEVICES=enp1s0f1np1",
     "-e GLOO_SOCKET_IFNAME=enp1s0f1np1 -e VLLM_HOST_IP=192.168.100.11",
+    "-e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1",
     `--name vllm-worker ${VLLM_IMAGE}`,
     `vllm serve ${model}`,
     "--nnodes 2 --node-rank 1 --master-addr 192.168.100.10 --master-port 29501",

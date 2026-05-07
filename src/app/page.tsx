@@ -420,7 +420,10 @@ export default function DashPage() {
             <div style={{ fontSize: 9, color: "#334155", letterSpacing: "0.14em", marginBottom: 8, textTransform: "uppercase" }}>
               ▸ CLUSTER CONTROL
             </div>
-            <ControlPanel containers={data?.vllm.containers ?? { head: "absent", worker: "absent", webui: "absent" }} />
+            <ControlPanel
+              containers={data?.vllm.containers ?? { head: "absent", worker: "absent", webui: "absent" }}
+              vllmMaxModelLen={data?.vllm.maxModelLen ?? null}
+            />
           </section>
         )}
 

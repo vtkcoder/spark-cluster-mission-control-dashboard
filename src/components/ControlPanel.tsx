@@ -101,7 +101,17 @@ function FeedbackBar({ msg, ok }: { msg: string; ok: boolean }) {
   );
 }
 
-export function ControlPanel({ containers }: { containers: ContainerStates }) {
+function fmtCtx(n: number): string {
+  return n >= 1024 ? `${(n / 1024).toFixed(0)}K` : String(n);
+}
+
+export function ControlPanel({
+  containers,
+  vllmMaxModelLen,
+}: {
+  containers: ContainerStates;
+  vllmMaxModelLen: number | null;
+}) {
   const [data, setData] = useState<ControlData | null>(null);
   const [selectedModel, setSelectedModel] = useState<string>("");
   const [maxLen, setMaxLen] = useState<number>(0);
@@ -110,6 +120,9 @@ export function ControlPanel({ containers }: { containers: ContainerStates }) {
   const [feedback, setFeedback] = useState<{ msg: string; ok: boolean } | null>(null);
   const [stopConfirm, setStopConfirm] = useState(false);
   const [webuiLoading, setWebuiLoading] = useState(false);
+  // Track the last-applied values so we can detect drift in both sliders
+  const [appliedMaxLen, setAppliedMaxLen] = useState<number | null>(null);
+  const [appliedGpuUtil, setAppliedGpuUtil] = useState<number | null>(null);
 
   const fetchModels = useCallback(async () => {
     try {
@@ -130,6 +143,22 @@ export function ControlPanel({ containers }: { containers: ContainerStates }) {
   }, [selectedModel]);
 
   useEffect(() => { fetchModels(); }, [fetchModels]);
+
+  // Sync applied refs when the live cluster comes online (first time or after restart)
+  useEffect(() => {
+    if (vllmMaxModelLen !== null && !loading["vllm-start"]) {
+      setAppliedMaxLen(vllmMaxModelLen);
+    }
+  }, [vllmMaxModelLen]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Initialise GPU util baseline from model default when cluster is running and we haven't tracked it yet
+  useEffect(() => {
+    const running = containers.head === "running" || containers.worker === "running";
+    if (running && appliedGpuUtil === null && data && selectedModel) {
+      const cfg = data.models.find((m) => m.id === selectedModel);
+      if (cfg) setAppliedGpuUtil(cfg.defaultGpuUtil);
+    }
+  }, [containers.head, containers.worker, data, selectedModel, appliedGpuUtil]);
 
   useEffect(() => {
     if (stopConfirm) {
@@ -158,6 +187,15 @@ export function ControlPanel({ containers }: { containers: ContainerStates }) {
       });
       const json = await res.json() as { ok: boolean; message?: string; error?: string };
       setFeedback({ msg: json.message ?? json.error ?? "Done", ok: json.ok });
+      if (json.ok && action === "vllm-start") {
+        // Record what we just applied so the "changes" indicator clears
+        setAppliedMaxLen(extra.maxModelLen as number ?? maxLen);
+        setAppliedGpuUtil(extra.gpuUtil as number ?? gpuUtil);
+      }
+      if (json.ok && action === "vllm-stop") {
+        setAppliedMaxLen(null);
+        setAppliedGpuUtil(null);
+      }
     } catch (e: unknown) {
       setFeedback({ msg: (e as Error).message, ok: false });
     } finally {
@@ -167,6 +205,13 @@ export function ControlPanel({ containers }: { containers: ContainerStates }) {
 
   const clusterRunning = containers.head === "running" || containers.worker === "running";
   const selectedCfg = data?.models.find((m) => m.id === selectedModel);
+
+  // Detect pending changes: compare sliders against last-applied (or live API for maxLen)
+  const liveMaxLen = vllmMaxModelLen ?? appliedMaxLen;
+  const liveGpuUtil = appliedGpuUtil;
+  const maxLenChanged = clusterRunning && liveMaxLen !== null && maxLen !== liveMaxLen;
+  const gpuUtilChanged = clusterRunning && liveGpuUtil !== null && Math.abs(gpuUtil - liveGpuUtil) > 0.001;
+  const hasChanges = maxLenChanged || gpuUtilChanged;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -180,6 +225,20 @@ export function ControlPanel({ containers }: { containers: ContainerStates }) {
             <span style={{ fontSize: 9, color: "#64748b" }}>WORKER</span>
             <StatusBadge state={containers.worker} />
           </div>
+          {/* Live running config pills */}
+          {clusterRunning && vllmMaxModelLen !== null && (
+            <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
+              <span style={{ fontSize: 9, color: "#475569", letterSpacing: "0.08em" }}>RUNNING:</span>
+              <span style={{ fontSize: 9, padding: "2px 6px", borderRadius: 3, background: "#a78bfa18", color: "#a78bfa", border: "1px solid #a78bfa33", fontWeight: 700 }}>
+                {fmtCtx(vllmMaxModelLen)} CTX
+              </span>
+              {appliedGpuUtil !== null && (
+                <span style={{ fontSize: 9, padding: "2px 6px", borderRadius: 3, background: "#8b5cf618", color: "#8b5cf6", border: "1px solid #8b5cf633", fontWeight: 700 }}>
+                  {(appliedGpuUtil * 100).toFixed(1)}% GPU
+                </span>
+              )}
+            </div>
+          )}
         </div>
 
         <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
@@ -187,40 +246,47 @@ export function ControlPanel({ containers }: { containers: ContainerStates }) {
           <div>
             <div style={{ fontSize: 9, color: "#475569", letterSpacing: "0.12em", marginBottom: 8, textTransform: "uppercase" }}>Select Model</div>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              {data?.models.map((m) => (
-                <div
-                  key={m.id}
-                  onClick={() => m.ready && handleModelSelect(m.id)}
-                  style={{
-                    border: `1px solid ${selectedModel === m.id ? "#3b82f6" : m.ready ? "#1a2540" : "#1a2540"}`,
-                    background: selectedModel === m.id ? "#1e3a8a22" : "#080e1a",
-                    borderRadius: 8,
-                    padding: "10px 14px",
-                    cursor: m.ready ? "pointer" : "not-allowed",
-                    opacity: m.ready ? 1 : 0.45,
-                    minWidth: 180,
-                    transition: "all 0.15s",
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 5 }}>
-                    <span style={{ fontSize: 11, fontWeight: 700, color: selectedModel === m.id ? "#60a5fa" : "#e2e8f0" }}>
-                      {m.displayName}
-                    </span>
-                    {m.ready ? (
-                      <span style={{ fontSize: 9, color: "#10b981", background: "#10b98118", border: "1px solid #10b98133", borderRadius: 3, padding: "1px 5px" }}>READY</span>
-                    ) : (
-                      <span style={{ fontSize: 9, color: "#f59e0b", background: "#f59e0b18", border: "1px solid #f59e0b33", borderRadius: 3, padding: "1px 5px" }}>{m.downloadPct}%</span>
+              {data?.models.map((m) => {
+                const isSelected = selectedModel === m.id;
+                // Dynamic note: show current slider values for selected model, else static note
+                const dynamicNote = isSelected
+                  ? `${fmtCtx(maxLen)} ctx · GPU ${(gpuUtil * 100).toFixed(1)}%`
+                  : m.note;
+                return (
+                  <div
+                    key={m.id}
+                    onClick={() => m.ready && handleModelSelect(m.id)}
+                    style={{
+                      border: `1px solid ${isSelected ? "#3b82f6" : "#1a2540"}`,
+                      background: isSelected ? "#1e3a8a22" : "#080e1a",
+                      borderRadius: 8,
+                      padding: "10px 14px",
+                      cursor: m.ready ? "pointer" : "not-allowed",
+                      opacity: m.ready ? 1 : 0.45,
+                      minWidth: 180,
+                      transition: "all 0.15s",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 5 }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: isSelected ? "#60a5fa" : "#e2e8f0" }}>
+                        {m.displayName}
+                      </span>
+                      {m.ready ? (
+                        <span style={{ fontSize: 9, color: "#10b981", background: "#10b98118", border: "1px solid #10b98133", borderRadius: 3, padding: "1px 5px" }}>READY</span>
+                      ) : (
+                        <span style={{ fontSize: 9, color: "#f59e0b", background: "#f59e0b18", border: "1px solid #f59e0b33", borderRadius: 3, padding: "1px 5px" }}>{m.downloadPct}%</span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 10, color: "#64748b" }}>{m.currentGb.toFixed(0)} / {m.expectedGb} GB</div>
+                    <div style={{ fontSize: 9, color: isSelected ? "#60a5fa99" : "#334155", marginTop: 2 }}>{dynamicNote}</div>
+                    {!m.ready && (
+                      <div style={{ marginTop: 6, height: 3, background: "#1a2540", borderRadius: 2 }}>
+                        <div style={{ height: "100%", width: `${m.downloadPct}%`, background: "#f59e0b", borderRadius: 2 }} />
+                      </div>
                     )}
                   </div>
-                  <div style={{ fontSize: 10, color: "#64748b" }}>{m.currentGb.toFixed(0)} / {m.expectedGb} GB</div>
-                  <div style={{ fontSize: 9, color: "#334155", marginTop: 2 }}>{m.note}</div>
-                  {!m.ready && (
-                    <div style={{ marginTop: 6, height: 3, background: "#1a2540", borderRadius: 2 }}>
-                      <div style={{ height: "100%", width: `${m.downloadPct}%`, background: "#f59e0b", borderRadius: 2 }} />
-                    </div>
-                  )}
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
 
@@ -228,8 +294,16 @@ export function ControlPanel({ containers }: { containers: ContainerStates }) {
           {selectedCfg && (
             <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
               <div style={{ flex: 1, minWidth: 180 }}>
-                <label style={{ fontSize: 9, color: "#475569", letterSpacing: "0.12em", textTransform: "uppercase", display: "block", marginBottom: 5 }}>
-                  MAX CONTEXT — {maxLen.toLocaleString()} tokens
+                <label style={{ fontSize: 9, letterSpacing: "0.12em", textTransform: "uppercase", display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
+                  <span style={{ color: "#475569" }}>MAX CONTEXT — </span>
+                  <span style={{ color: maxLenChanged ? "#f59e0b" : "#3b82f6", fontWeight: 700 }}>
+                    {maxLen.toLocaleString()} tokens
+                  </span>
+                  {maxLenChanged && liveMaxLen !== null && (
+                    <span style={{ color: "#475569", fontWeight: 400 }}>
+                      (was {liveMaxLen.toLocaleString()})
+                    </span>
+                  )}
                 </label>
                 <input
                   type="range"
@@ -238,31 +312,42 @@ export function ControlPanel({ containers }: { containers: ContainerStates }) {
                   step={512}
                   value={maxLen}
                   onChange={(e) => setMaxLen(parseInt(e.target.value))}
-                  style={{ width: "100%", accentColor: "#3b82f6" }}
+                  style={{ width: "100%", accentColor: maxLenChanged ? "#f59e0b" : "#3b82f6" }}
                 />
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: "#334155", marginTop: 2 }}>
                   <span>512</span>
-                  <span style={{ color: "#3b82f6", fontWeight: 700 }}>{maxLen.toLocaleString()}</span>
+                  <span style={{ color: maxLenChanged ? "#f59e0b" : "#3b82f6", fontWeight: 700 }}>{maxLen.toLocaleString()}</span>
                   <span>{selectedModel.includes("122B") ? "65K" : "7K"}</span>
                 </div>
               </div>
               <div style={{ flex: 1, minWidth: 180 }}>
-                <label style={{ fontSize: 9, color: "#475569", letterSpacing: "0.12em", textTransform: "uppercase", display: "block", marginBottom: 5 }}>
-                  GPU MEMORY UTIL — {(gpuUtil * 100).toFixed(1)}%
+                <label style={{ fontSize: 9, letterSpacing: "0.12em", textTransform: "uppercase", display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
+                  <span style={{ color: "#475569" }}>GPU MEM UTIL — </span>
+                  <span style={{ color: gpuUtilChanged ? "#f59e0b" : "#8b5cf6", fontWeight: 700 }}>
+                    {(gpuUtil * 100).toFixed(1)}%
+                  </span>
+                  {gpuUtilChanged && liveGpuUtil !== null && (
+                    <span style={{ color: "#475569", fontWeight: 400 }}>
+                      (was {(liveGpuUtil * 100).toFixed(1)}%)
+                    </span>
+                  )}
                 </label>
                 <input
                   type="range"
                   min={0.7}
-                  max={0.98}
+                  max={0.91}
                   step={0.005}
                   value={gpuUtil}
                   onChange={(e) => setGpuUtil(parseFloat(e.target.value))}
-                  style={{ width: "100%", accentColor: "#8b5cf6" }}
+                  style={{ width: "100%", accentColor: gpuUtilChanged ? "#f59e0b" : "#8b5cf6" }}
                 />
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: "#334155", marginTop: 2 }}>
                   <span>70%</span>
-                  <span style={{ color: "#8b5cf6", fontWeight: 700 }}>{(gpuUtil * 100).toFixed(1)}%</span>
-                  <span>98%</span>
+                  <span style={{ color: gpuUtilChanged ? "#f59e0b" : "#8b5cf6", fontWeight: 700 }}>{(gpuUtil * 100).toFixed(1)}%</span>
+                  <span>91%</span>
+                </div>
+                <div style={{ fontSize: 9, color: "#1e3a5f", marginTop: 3 }}>
+                  max 91% — NCCL overhead limit
                 </div>
               </div>
             </div>
@@ -270,13 +355,28 @@ export function ControlPanel({ containers }: { containers: ContainerStates }) {
 
           {/* Action buttons */}
           <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-            <ActionButton
-              label="▶ LAUNCH CLUSTER"
-              color="#10b981"
-              disabled={!selectedModel || !selectedCfg?.ready || clusterRunning}
-              loading={loading["vllm-start"]}
-              onClick={() => post("vllm-start", { model: selectedModel, maxModelLen: maxLen, gpuUtil })}
-            />
+            {/* Apply Changes — only when running and sliders drifted */}
+            {hasChanges && (
+              <ActionButton
+                label={`⟳ APPLY CHANGES${loading["vllm-start"] ? "" : ""}`}
+                color="#f59e0b"
+                loading={loading["vllm-start"]}
+                onClick={() => post("vllm-start", { model: selectedModel, maxModelLen: maxLen, gpuUtil })}
+              />
+            )}
+
+            {/* Launch — only when not running */}
+            {!clusterRunning && (
+              <ActionButton
+                label="▶ LAUNCH CLUSTER"
+                color="#10b981"
+                disabled={!selectedModel || !selectedCfg?.ready}
+                loading={loading["vllm-start"]}
+                onClick={() => post("vllm-start", { model: selectedModel, maxModelLen: maxLen, gpuUtil })}
+              />
+            )}
+
+            {/* Stop */}
             {loading["vllm-stop"] ? (
               <ActionButton
                 label="■ STOPPING…"
@@ -298,9 +398,16 @@ export function ControlPanel({ containers }: { containers: ContainerStates }) {
                 onClick={() => { setStopConfirm(false); post("vllm-stop"); }}
               />
             )}
-            {clusterRunning && !stopConfirm && (
-              <span style={{ fontSize: 10, color: "#475569" }}>
-                Cluster is running — launch a new one to switch models (auto-replaces)
+
+            {/* Status hint */}
+            {clusterRunning && !hasChanges && !loading["vllm-start"] && (
+              <span style={{ fontSize: 10, color: "#1e3a5f" }}>
+                Adjust sliders to queue a restart
+              </span>
+            )}
+            {hasChanges && !loading["vllm-start"] && (
+              <span style={{ fontSize: 10, color: "#f59e0b99" }}>
+                Cluster will restart to apply — takes ~15 min
               </span>
             )}
           </div>
