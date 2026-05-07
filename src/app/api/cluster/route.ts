@@ -201,7 +201,7 @@ const HF_HUB = "/home/absolome/.cache/huggingface/hub";
 // Known expected sizes (measured or derived) — used to compute % complete.
 // Unknown models show raw downloaded bytes with no total.
 const KNOWN_EXPECTED_BYTES: Record<string, number> = {
-  "Qwen/Qwen3-Coder-Next-FP8":               85_899_345_920,
+  "Qwen/Qwen3-Coder-Next-FP8":               80_407_787_882,
   "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8": 236_449_103_093,
   "Qwen/Qwen3.5-122B-A10B-FP8":             127_195_722_339,
   "openai/gpt-oss-120b":                     85_899_345_920, // MXFP4 ~80 GiB; update on download
