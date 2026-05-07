@@ -139,7 +139,7 @@ export async function POST(req: NextRequest) {
   try {
     child = spawn(
       CLAUDE_BIN,
-      ["--dangerously-skip-permissions", "--output-format", "stream-json", "-p", task],
+      ["--dangerously-skip-permissions", "--verbose", "--output-format", "stream-json", "-p", task],
       {
         cwd: WORK_DIR,
         env: {
