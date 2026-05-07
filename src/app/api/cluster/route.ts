@@ -190,36 +190,46 @@ async function getNetworkRx(iface: string, remote: boolean): Promise<number> {
   }
 }
 
+import { readdirSync } from "fs";
+
 // ── Download speed tracking (module-level cache) ──────────────────────────────
 let prevRx: { spark1: number; spark2: number; ts: number } | null = null;
 
-// ── Model download configs ────────────────────────────────────────────────────
+// ── HF cache config ───────────────────────────────────────────────────────────
 const HF_HUB = "/home/absolome/.cache/huggingface/hub";
-const TRACKED_MODELS = [
-  {
-    model: "Qwen/Qwen3-Coder-Next-FP8",
-    dir: `${HF_HUB}/models--Qwen--Qwen3-Coder-Next-FP8`,
-    expectedBytes: 85_899_345_920, // ~80 GiB FP8; update once complete
-  },
-  {
-    model: "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8",
-    dir: `${HF_HUB}/models--Qwen--Qwen3-235B-A22B-Instruct-2507-FP8`,
-    expectedBytes: 236_449_103_093, // measured complete on-disk size
-  },
-];
+
+// Known expected sizes (measured or derived) — used to compute % complete.
+// Unknown models show raw downloaded bytes with no total.
+const KNOWN_EXPECTED_BYTES: Record<string, number> = {
+  "Qwen/Qwen3-Coder-Next-FP8":               85_899_345_920,
+  "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8": 236_449_103_093,
+  "Qwen/Qwen3.5-122B-A10B-FP8":             127_195_722_339,
+  "openai/gpt-oss-120b":                     85_899_345_920, // MXFP4 ~80 GiB; update on download
+};
+
+function cacheKeyToModelId(key: string): string {
+  const s = key.slice("models--".length);
+  const i = s.indexOf("--");
+  return i === -1 ? s : s.slice(0, i) + "/" + s.slice(i + 2);
+}
 
 // ── Main handler ──────────────────────────────────────────────────────────────
 export async function GET() {
   const NET_IFACE = "enP7s7"; // WAN interface
 
-  // Fetch model disk bytes + incomplete status for each tracked model (spark1 only;
-  // spark2 reads via NFS so byte counts are identical)
+  // Auto-discover all model dirs in the HF cache
+  let cacheDirs: string[] = [];
+  try { cacheDirs = readdirSync(HF_HUB).filter((d) => d.startsWith("models--")); } catch { /* ok */ }
+
   const modelChecks = await Promise.all(
-    TRACKED_MODELS.map(async (m) => ({
-      ...m,
-      bytes: await getDiskBytes(m.dir, false),
-      active: await hasIncompleteBlobs(m.dir, false),
-    }))
+    cacheDirs.map(async (key) => {
+      const model = cacheKeyToModelId(key);
+      const dir = `${HF_HUB}/${key}`;
+      const bytes = await getDiskBytes(dir, false);
+      const active = await hasIncompleteBlobs(dir, false);
+      const expectedBytes = KNOWN_EXPECTED_BYTES[model] ?? 0;
+      return { model, dir, bytes, active, expectedBytes };
+    })
   );
 
   const [
@@ -259,16 +269,17 @@ export async function GET() {
   }
   prevRx = { spark1: s1RxBytes, spark2: s2RxBytes, ts: now };
 
-  // Only surface models that are actively downloading or partially downloaded
+  // Surface models that are actively downloading or partially complete
   const activeDownloads = modelChecks
-    .filter((m) => m.active || (m.bytes > 0 && m.bytes < m.expectedBytes))
+    .filter((m) => m.active || (m.expectedBytes > 0 && m.bytes > 0 && m.bytes < m.expectedBytes))
     .map((m) => ({
       model: m.model,
       bytes: m.bytes,
       expectedBytes: m.expectedBytes,
       active: m.active,
-      dlSpeedS1,
-      dlSpeedS2,
+      // Speed attributed to the actively downloading model; Spark2 reads via NFS
+      dlSpeedS1: m.active ? dlSpeedS1 : 0,
+      dlSpeedS2: 0, // spark2 has no independent download — reads via NFS from spark1
     }));
 
   return NextResponse.json({

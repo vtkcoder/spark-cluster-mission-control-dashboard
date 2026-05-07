@@ -1,6 +1,6 @@
 import { exec } from "child_process";
 import { promisify } from "util";
-import { readdirSync, existsSync, statSync } from "fs";
+import { readdirSync, existsSync } from "fs";
 import { join } from "path";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -10,22 +10,61 @@ const execAsync = promisify(exec);
 const HF_CACHE = "/home/absolome/.cache/huggingface/hub";
 const VLLM_IMAGE = "nvcr.io/nvidia/vllm:26.04-py3";
 
-const MODEL_CONFIGS: Record<string, { displayName: string; expectedGb: number; defaultMaxLen: number; defaultGpuUtil: number; note: string }> = {
+// ── Per-model defaults for known models ───────────────────────────────────────
+// Auto-discovery surfaces any model in the HF cache; this table provides the
+// optimal launch parameters. Unknown models fall back to safe generic defaults.
+interface ModelDefaults {
+  displayName: string;
+  expectedGb: number;        // on-disk FP8/quant size — used for readiness check
+  defaultMaxLen: number;
+  defaultGpuUtil: number;
+  maxContextSlider: number;  // upper bound for the context slider in the UI
+  note: string;
+}
+
+const KNOWN_MODELS: Record<string, ModelDefaults> = {
   "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8": {
     displayName: "Qwen3-235B-A22B",
     expectedGb: 220,
     defaultMaxLen: 5680,
     defaultGpuUtil: 0.926,
+    maxContextSlider: 7168,
     note: "5,680 ctx — GPU memory bound",
+  },
+  "Qwen/Qwen3-Coder-Next-FP8": {
+    displayName: "Qwen3-Coder-Next",
+    expectedGb: 80,
+    defaultMaxLen: 32768,
+    defaultGpuUtil: 0.88,
+    maxContextSlider: 65536,
+    note: "32K ctx · 80B MoE coding model",
   },
   "Qwen/Qwen3.5-122B-A10B-FP8": {
     displayName: "Qwen3.5-122B-A10B",
     expectedGb: 122,
     defaultMaxLen: 65536,
     defaultGpuUtil: 0.91,
+    maxContextSlider: 65536,
     note: "65K context",
   },
+  "openai/gpt-oss-120b": {
+    displayName: "GPT-OSS-120B",
+    expectedGb: 80,
+    defaultMaxLen: 32768,
+    defaultGpuUtil: 0.88,
+    maxContextSlider: 131072,
+    note: "120B MoE · 5.1B active · 256K ctx",
+  },
 };
+
+// ── HF cache discovery ────────────────────────────────────────────────────────
+function cacheKeyToModelId(cacheKey: string): string {
+  // "models--Qwen--Qwen3-Coder-Next-FP8" → "Qwen/Qwen3-Coder-Next-FP8"
+  const withoutPrefix = cacheKey.slice("models--".length);
+  const idx = withoutPrefix.indexOf("--");
+  if (idx === -1) return withoutPrefix;
+  return withoutPrefix.slice(0, idx) + "/" + withoutPrefix.slice(idx + 2);
+}
 
 function dirBytes(path: string): number {
   try {
@@ -35,30 +74,56 @@ function dirBytes(path: string): number {
 }
 
 function getModels() {
-  return Object.entries(MODEL_CONFIGS).map(([id, cfg]) => {
-    const cacheKey = "models--" + id.replace("/", "--");
+  let cacheDirs: string[] = [];
+  try {
+    cacheDirs = readdirSync(HF_CACHE).filter((d) => d.startsWith("models--"));
+  } catch { /* cache dir missing */ }
+
+  return cacheDirs.map((cacheKey) => {
+    const id = cacheKeyToModelId(cacheKey);
     const dir = join(HF_CACHE, cacheKey);
-    const exists = existsSync(dir);
     const blobsDir = join(dir, "blobs");
-    const incomplete = exists && existsSync(blobsDir)
+    const known = KNOWN_MODELS[id];
+
+    const incompleteCount = existsSync(blobsDir)
       ? readdirSync(blobsDir).filter((f) => f.endsWith(".incomplete")).length
       : 0;
-    const currentGb = exists ? dirBytes(dir) / 1073741824 : 0;
-    const ready = exists && incomplete === 0 && currentGb >= cfg.expectedGb * 0.95;
+
+    const currentGb = dirBytes(dir) / 1073741824;
+    const expectedGb = known?.expectedGb ?? 0;
+
+    // Ready: no incomplete blobs AND (size ≥ 95% of expected OR expected unknown)
+    const ready =
+      incompleteCount === 0 &&
+      (expectedGb === 0 || currentGb >= expectedGb * 0.95);
+
+    const downloadPct =
+      expectedGb > 0
+        ? Math.min(100, Math.round((currentGb / expectedGb) * 100))
+        : incompleteCount === 0
+        ? 100
+        : 0;
+
+    // Display name: use known config or derive from model id
+    const displayName = known?.displayName ?? id.split("/").pop() ?? id;
+
     return {
       id,
-      displayName: cfg.displayName,
-      expectedGb: cfg.expectedGb,
+      displayName,
+      expectedGb,
       currentGb: Math.round(currentGb * 10) / 10,
-      defaultMaxLen: cfg.defaultMaxLen,
-      defaultGpuUtil: cfg.defaultGpuUtil,
-      note: cfg.note,
+      defaultMaxLen: known?.defaultMaxLen ?? 8192,
+      defaultGpuUtil: known?.defaultGpuUtil ?? 0.85,
+      maxContextSlider: known?.maxContextSlider ?? 32768,
+      note: known?.note ?? "Unknown model — using generic defaults",
       ready,
-      downloadPct: Math.min(100, Math.round((currentGb / cfg.expectedGb) * 100)),
+      downloading: incompleteCount > 0,
+      downloadPct,
     };
   });
 }
 
+// ── vLLM command builders ─────────────────────────────────────────────────────
 function buildHeadCmd(model: string, maxLen: number, gpuUtil: number): string {
   return [
     "docker run -d --network host --gpus all --shm-size 10g",
@@ -130,13 +195,18 @@ export async function POST(req: NextRequest) {
 
     if (body.action === "vllm-start") {
       const model = body.model;
-      const cfg = MODEL_CONFIGS[model ?? ""];
-      if (!model || !cfg) return NextResponse.json({ ok: false, error: "Invalid model" }, { status: 400 });
+      if (!model) return NextResponse.json({ ok: false, error: "model required" }, { status: 400 });
+
+      // Validate model is actually ready (in cache, no incomplete blobs)
+      const models = getModels();
+      const cfg = models.find((m) => m.id === model);
+      if (!cfg?.ready) {
+        return NextResponse.json({ ok: false, error: `Model not ready: ${model}` }, { status: 400 });
+      }
 
       const maxLen = body.maxModelLen ?? cfg.defaultMaxLen;
       const gpuUtil = body.gpuUtil ?? cfg.defaultGpuUtil;
 
-      // Force-remove existing containers before launching new ones
       await Promise.allSettled([
         execAsync("docker rm -f vllm-head 2>/dev/null; true", { timeout: 15000 }),
         execAsync("ssh -o ConnectTimeout=5 -o BatchMode=yes spark2 'docker rm -f vllm-worker 2>/dev/null; true'", { timeout: 15000 }),
@@ -145,7 +215,6 @@ export async function POST(req: NextRequest) {
       const headCmd = buildHeadCmd(model, maxLen, gpuUtil);
       const workerCmd = buildWorkerCmd(model, maxLen, gpuUtil);
 
-      // Launch both in parallel — docker run -d returns immediately
       const [headResult, workerResult] = await Promise.allSettled([
         execAsync(headCmd, { timeout: 30000 }),
         execAsync(`ssh -o ConnectTimeout=10 -o BatchMode=yes spark2 '${workerCmd}'`, { timeout: 30000 }),
@@ -160,7 +229,7 @@ export async function POST(req: NextRequest) {
 
       return NextResponse.json({
         ok: true,
-        message: `Cluster launching: head=${headOk ? "started" : "FAILED"}, worker=${workerOk ? "started" : "FAILED"}. Model loading takes 15-20 min. Monitor in Overview.`,
+        message: `Cluster launching: head=${headOk ? "started" : "FAILED"}, worker=${workerOk ? "started" : "FAILED"}. Model loading takes 15–20 min. Monitor in Overview.`,
         headOk,
         workerOk,
       });

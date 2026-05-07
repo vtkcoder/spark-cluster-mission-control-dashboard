@@ -9,8 +9,10 @@ interface ModelInfo {
   currentGb: number;
   defaultMaxLen: number;
   defaultGpuUtil: number;
+  maxContextSlider: number;
   note: string;
   ready: boolean;
+  downloading: boolean;
   downloadPct: number;
 }
 
@@ -248,40 +250,40 @@ export function ControlPanel({
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
               {data?.models.map((m) => {
                 const isSelected = selectedModel === m.id;
-                // Dynamic note: show current slider values for selected model, else static note
                 const dynamicNote = isSelected
                   ? `${fmtCtx(maxLen)} ctx · GPU ${(gpuUtil * 100).toFixed(1)}%`
                   : m.note;
+                const statusColor = m.ready ? "#10b981" : m.downloading ? "#a78bfa" : "#f59e0b";
+                const statusLabel = m.ready ? "READY" : m.downloading ? `↓ ${m.downloadPct}%` : `${m.downloadPct}%`;
                 return (
                   <div
                     key={m.id}
                     onClick={() => m.ready && handleModelSelect(m.id)}
                     style={{
-                      border: `1px solid ${isSelected ? "#3b82f6" : "#1a2540"}`,
-                      background: isSelected ? "#1e3a8a22" : "#080e1a",
+                      border: `1px solid ${isSelected ? "#3b82f6" : m.downloading ? "#4c1d9566" : "#1a2540"}`,
+                      background: isSelected ? "#1e3a8a22" : m.downloading ? "#1a0a2e22" : "#080e1a",
                       borderRadius: 8,
                       padding: "10px 14px",
-                      cursor: m.ready ? "pointer" : "not-allowed",
-                      opacity: m.ready ? 1 : 0.45,
+                      cursor: m.ready ? "pointer" : "default",
                       minWidth: 180,
                       transition: "all 0.15s",
                     }}
                   >
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 5 }}>
-                      <span style={{ fontSize: 11, fontWeight: 700, color: isSelected ? "#60a5fa" : "#e2e8f0" }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: isSelected ? "#60a5fa" : m.downloading ? "#c4b5fd" : "#e2e8f0" }}>
                         {m.displayName}
                       </span>
-                      {m.ready ? (
-                        <span style={{ fontSize: 9, color: "#10b981", background: "#10b98118", border: "1px solid #10b98133", borderRadius: 3, padding: "1px 5px" }}>READY</span>
-                      ) : (
-                        <span style={{ fontSize: 9, color: "#f59e0b", background: "#f59e0b18", border: "1px solid #f59e0b33", borderRadius: 3, padding: "1px 5px" }}>{m.downloadPct}%</span>
-                      )}
+                      <span style={{ fontSize: 9, color: statusColor, background: `${statusColor}18`, border: `1px solid ${statusColor}33`, borderRadius: 3, padding: "1px 5px" }}>
+                        {statusLabel}
+                      </span>
                     </div>
-                    <div style={{ fontSize: 10, color: "#64748b" }}>{m.currentGb.toFixed(0)} / {m.expectedGb} GB</div>
+                    <div style={{ fontSize: 10, color: "#64748b" }}>
+                      {m.currentGb.toFixed(0)}{m.expectedGb > 0 ? ` / ${m.expectedGb} GB` : " GB on disk"}
+                    </div>
                     <div style={{ fontSize: 9, color: isSelected ? "#60a5fa99" : "#334155", marginTop: 2 }}>{dynamicNote}</div>
                     {!m.ready && (
                       <div style={{ marginTop: 6, height: 3, background: "#1a2540", borderRadius: 2 }}>
-                        <div style={{ height: "100%", width: `${m.downloadPct}%`, background: "#f59e0b", borderRadius: 2 }} />
+                        <div style={{ height: "100%", width: `${m.downloadPct}%`, background: m.downloading ? "#8b5cf6" : "#f59e0b", borderRadius: 2 }} />
                       </div>
                     )}
                   </div>
@@ -308,7 +310,7 @@ export function ControlPanel({
                 <input
                   type="range"
                   min={512}
-                  max={selectedModel.includes("122B") ? 65536 : 7168}
+                  max={selectedCfg?.maxContextSlider ?? 65536}
                   step={512}
                   value={maxLen}
                   onChange={(e) => setMaxLen(parseInt(e.target.value))}
@@ -317,7 +319,7 @@ export function ControlPanel({
                 <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9, color: "#334155", marginTop: 2 }}>
                   <span>512</span>
                   <span style={{ color: maxLenChanged ? "#f59e0b" : "#3b82f6", fontWeight: 700 }}>{maxLen.toLocaleString()}</span>
-                  <span>{selectedModel.includes("122B") ? "65K" : "7K"}</span>
+                  <span>{fmtCtx(selectedCfg?.maxContextSlider ?? 65536)}</span>
                 </div>
               </div>
               <div style={{ flex: 1, minWidth: 180 }}>
