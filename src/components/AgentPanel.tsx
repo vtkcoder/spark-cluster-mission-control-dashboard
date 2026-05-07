@@ -173,7 +173,7 @@ export function AgentPanel() {
               </span>
             )}
             <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", borderRadius: 20, background: `${statusColor}12`, border: `1px solid ${statusColor}33` }}>
-              <div style={{ width: 6, height: 6, borderRadius: "50%", background: statusColor }} className={isRunning ? "pulse-dot" : ""} />
+              <div style={{ width: 6, height: 6, borderRadius: "50%", background: statusColor }} />
               <span style={{ fontSize: 10, color: statusColor, fontWeight: 700, letterSpacing: "0.1em" }}>{statusLabel}</span>
             </div>
           </div>
