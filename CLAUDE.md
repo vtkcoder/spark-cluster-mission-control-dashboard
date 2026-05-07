@@ -99,7 +99,7 @@ Same command with `--node-rank 1`, `VLLM_HOST_IP=192.168.100.11`, `--name vllm-w
 | Model | --gpu-memory-utilization | --max-model-len | Notes |
 |---|---|---|---|
 | Qwen3-235B-A22B-FP8 | 0.926 | 5680 | memory-bound |
-| Qwen3-Coder-Next-FP8 | 0.88 | 32768 | 32K ctx safe |
+| Qwen3-Coder-Next-FP8 | 0.88 | 65536 | 65K ctx |
 | Qwen3.5-122B-A10B-FP8 | 0.91 | 65536 | 65K ctx |
 
 ### Stop cluster

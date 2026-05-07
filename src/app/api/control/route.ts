@@ -34,10 +34,10 @@ const KNOWN_MODELS: Record<string, ModelDefaults> = {
   "Qwen/Qwen3-Coder-Next-FP8": {
     displayName: "Qwen3-Coder-Next",
     expectedGb: 75,
-    defaultMaxLen: 32768,
+    defaultMaxLen: 65536,
     defaultGpuUtil: 0.88,
     maxContextSlider: 65536,
-    note: "32K ctx · 80B MoE coding model",
+    note: "65K ctx · 80B MoE coding model",
   },
   "Qwen/Qwen3.5-122B-A10B-FP8": {
     displayName: "Qwen3.5-122B-A10B",
