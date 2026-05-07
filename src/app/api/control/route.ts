@@ -127,8 +127,8 @@ function buildHeadCmd(model: string, maxLen: number, gpuUtil: number): string {
   return [
     "docker run -d --network host --gpus all --shm-size 10g",
     "-v /home/absolome/.cache/huggingface:/root/.cache/huggingface",
-    "-v /tmp/vllm_core.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/core.py:ro",
-    "-v /tmp/vllm_multiproc.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/executor/multiproc_executor.py:ro",
+    "-v /home/absolome/.vllm-patches/core.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/core.py:ro",
+    "-v /home/absolome/.vllm-patches/multiproc_executor.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/executor/multiproc_executor.py:ro",
     "-e NCCL_SOCKET_IFNAME=enp1s0f1np1 -e UCX_NET_DEVICES=enp1s0f1np1",
     "-e GLOO_SOCKET_IFNAME=enp1s0f1np1 -e VLLM_HOST_IP=192.168.100.10",
     "-e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1",
@@ -147,8 +147,8 @@ function buildWorkerCmd(model: string, maxLen: number, gpuUtil: number): string 
   return [
     "docker run -d --network host --gpus all --shm-size 10g",
     "-v /home/absolome/.cache/huggingface:/root/.cache/huggingface",
-    "-v /tmp/vllm_core.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/core.py:ro",
-    "-v /tmp/vllm_multiproc.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/executor/multiproc_executor.py:ro",
+    "-v /home/absolome/.vllm-patches/core.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/engine/core.py:ro",
+    "-v /home/absolome/.vllm-patches/multiproc_executor.py:/usr/local/lib/python3.12/dist-packages/vllm/v1/executor/multiproc_executor.py:ro",
     "-e NCCL_SOCKET_IFNAME=enp1s0f1np1 -e UCX_NET_DEVICES=enp1s0f1np1",
     "-e GLOO_SOCKET_IFNAME=enp1s0f1np1 -e VLLM_HOST_IP=192.168.100.11",
     "-e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1",
