@@ -10,6 +10,7 @@ import { ControlPanel } from "@/components/ControlPanel";
 import { Pm2Panel } from "@/components/Pm2Panel";
 import { LogsPanel } from "@/components/LogsPanel";
 import { ChatPanel } from "@/components/ChatPanel";
+import { AgentPanel } from "@/components/AgentPanel";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface GpuData {
@@ -96,7 +97,7 @@ export default function DashPage() {
   });
   const [tasksData, setTasksData] = useState<TasksData | null>(null);
   const [tasksLoading, setTasksLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<"overview" | "tasks" | "control" | "pm2" | "logs" | "chat">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "tasks" | "control" | "pm2" | "logs" | "chat" | "agent">("overview");
   const tasksHasData = useRef(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -292,8 +293,8 @@ export default function DashPage() {
           padding: "0 20px",
         }}
       >
-        {(["overview", "tasks", "control", "pm2", "logs", "chat"] as const).map((tab) => {
-          const labels: Record<string, string> = { overview: "OVERVIEW", tasks: "SYSTEM TASKS", control: "CLUSTER CONTROL", pm2: "PM2", logs: "LOGS", chat: "CHAT" };
+        {(["overview", "tasks", "control", "pm2", "logs", "chat", "agent"] as const).map((tab) => {
+          const labels: Record<string, string> = { overview: "OVERVIEW", tasks: "SYSTEM TASKS", control: "CLUSTER CONTROL", pm2: "PM2", logs: "LOGS", chat: "CHAT", agent: "◈ AGENT" };
           const active = activeTab === tab;
           return (
             <button
@@ -302,12 +303,16 @@ export default function DashPage() {
               style={{
                 background: "none",
                 border: "none",
-                borderBottom: active ? "2px solid #3b82f6" : "2px solid transparent",
+                borderBottom: active
+                  ? tab === "agent" ? "2px solid #8b5cf6" : "2px solid #3b82f6"
+                  : "2px solid transparent",
                 padding: "9px 18px",
                 cursor: "pointer",
                 fontSize: 10,
                 letterSpacing: "0.12em",
-                color: active ? "#3b82f6" : "#334155",
+                color: active
+                  ? tab === "agent" ? "#a78bfa" : "#3b82f6"
+                  : tab === "agent" ? "#5b3f8a" : "#334155",
                 fontWeight: active ? 700 : 400,
                 fontFamily: "inherit",
                 transition: "color 0.15s",
@@ -454,6 +459,16 @@ export default function DashPage() {
               modelName={data?.vllm.model ?? null}
               maxModelLen={data?.vllm.maxModelLen ?? null}
             />
+          </section>
+        )}
+
+        {/* ── AGENT TAB ── */}
+        {activeTab === "agent" && (
+          <section>
+            <div style={{ fontSize: 9, color: "#334155", letterSpacing: "0.14em", marginBottom: 8, textTransform: "uppercase" }}>
+              ▸ CLAUDE CODE AGENT — CLUSTER MANAGER & DASHBOARD DEVELOPER
+            </div>
+            <AgentPanel />
           </section>
         )}
 
