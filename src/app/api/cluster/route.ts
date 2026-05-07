@@ -196,7 +196,7 @@ let prevRx: { spark1: number; spark2: number; ts: number } | null = null;
 // ── Main handler ──────────────────────────────────────────────────────────────
 export async function GET() {
   const MODEL_DIR = "/home/absolome/.cache/huggingface/hub/models--Qwen--Qwen3.5-122B-A10B-FP8";
-  const EXPECTED_BYTES = 131_072_000_000; // ~122 GiB
+  const EXPECTED_BYTES = 127_195_722_339; // measured on-disk size of complete download
   const NET_IFACE = "enP7s7"; // WAN interface
 
   const [
@@ -209,7 +209,6 @@ export async function GET() {
     webuiStatus,
     headUptime,
     s1DownBytes,
-    s2DownBytes,
     s1Incomplete,
     s1RxBytes,
     s2RxBytes,
@@ -223,7 +222,7 @@ export async function GET() {
     getDockerStatus("open-webui", false),
     getDockerUptime("vllm-head", false),
     getDiskBytes(MODEL_DIR, false),
-    getDiskBytes(MODEL_DIR, true),
+    // spark2 reads the same model via NFS from spark1 — no separate byte count needed
     hasIncompleteBlobs(MODEL_DIR, false),
     getNetworkRx(NET_IFACE, false),
     getNetworkRx(NET_IFACE, true),
@@ -242,7 +241,7 @@ export async function GET() {
   }
   prevRx = { spark1: s1RxBytes, spark2: s2RxBytes, ts: now };
 
-  const downloadActive = s1Incomplete || (s2DownBytes > 0 && s2DownBytes < EXPECTED_BYTES * 0.99);
+  const downloadActive = s1Incomplete;
 
   return NextResponse.json({
     ts: now,
@@ -319,7 +318,7 @@ export async function GET() {
         ? {
             model: "Qwen/Qwen3.5-122B-A10B-FP8",
             spark1Bytes: s1DownBytes,
-            spark2Bytes: s2DownBytes,
+            spark2Bytes: s1DownBytes,
             expectedBytes: EXPECTED_BYTES,
             active: downloadActive,
             dlSpeedS1,
