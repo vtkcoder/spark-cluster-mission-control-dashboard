@@ -11,6 +11,7 @@ import { Pm2Panel } from "@/components/Pm2Panel";
 import { LogsPanel } from "@/components/LogsPanel";
 import { ChatPanel } from "@/components/ChatPanel";
 import { AgentPanel } from "@/components/AgentPanel";
+import { InferencePanel } from "@/components/InferencePanel";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface GpuData {
@@ -97,7 +98,7 @@ export default function DashPage() {
   });
   const [tasksData, setTasksData] = useState<TasksData | null>(null);
   const [tasksLoading, setTasksLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<"overview" | "tasks" | "control" | "pm2" | "logs" | "chat" | "agent">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "inference" | "tasks" | "control" | "pm2" | "logs" | "chat" | "agent">("overview");
   const tasksHasData = useRef(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -293,9 +294,12 @@ export default function DashPage() {
           padding: "0 20px",
         }}
       >
-        {(["overview", "tasks", "control", "pm2", "logs", "chat", "agent"] as const).map((tab) => {
-          const labels: Record<string, string> = { overview: "OVERVIEW", tasks: "SYSTEM TASKS", control: "CLUSTER CONTROL", pm2: "PM2", logs: "LOGS", chat: "CHAT", agent: "◈ AGENT" };
+        {(["overview", "inference", "tasks", "control", "pm2", "logs", "chat", "agent"] as const).map((tab) => {
+          const labels: Record<string, string> = { overview: "OVERVIEW", inference: "INFERENCE", tasks: "SYSTEM TASKS", control: "CLUSTER CONTROL", pm2: "PM2", logs: "LOGS", chat: "CHAT", agent: "◈ AGENT" };
           const active = activeTab === tab;
+          const accentColor = tab === "agent" ? "#8b5cf6" : tab === "inference" ? "#06b6d4" : "#3b82f6";
+          const activeText = tab === "agent" ? "#a78bfa" : tab === "inference" ? "#22d3ee" : "#3b82f6";
+          const inactiveText = tab === "agent" ? "#5b3f8a" : tab === "inference" ? "#0f4a5a" : "#334155";
           return (
             <button
               key={tab}
@@ -303,16 +307,12 @@ export default function DashPage() {
               style={{
                 background: "none",
                 border: "none",
-                borderBottom: active
-                  ? tab === "agent" ? "2px solid #8b5cf6" : "2px solid #3b82f6"
-                  : "2px solid transparent",
+                borderBottom: active ? `2px solid ${accentColor}` : "2px solid transparent",
                 padding: "9px 18px",
                 cursor: "pointer",
                 fontSize: 10,
                 letterSpacing: "0.12em",
-                color: active
-                  ? tab === "agent" ? "#a78bfa" : "#3b82f6"
-                  : tab === "agent" ? "#5b3f8a" : "#334155",
+                color: active ? activeText : inactiveText,
                 fontWeight: active ? 700 : 400,
                 fontFamily: "inherit",
                 transition: "color 0.15s",
@@ -406,6 +406,16 @@ export default function DashPage() {
               </section>
             )}
           </>
+        )}
+
+        {/* ── INFERENCE TAB ── */}
+        {activeTab === "inference" && (
+          <section>
+            <div style={{ fontSize: 9, color: "#334155", letterSpacing: "0.14em", marginBottom: 8, textTransform: "uppercase" }}>
+              ▸ INFERENCE METRICS · auto-refreshes every 3s
+            </div>
+            <InferencePanel />
+          </section>
         )}
 
         {/* ── SYSTEM TASKS TAB ── */}

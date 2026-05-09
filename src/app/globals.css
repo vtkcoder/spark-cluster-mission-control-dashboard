@@ -85,6 +85,23 @@
   50% { opacity: 0; }
 }
 
+/* Inference: token stream animation */
+@keyframes token-drift {
+  0%   { transform: translateX(-140%); opacity: 0; }
+  8%   { opacity: 1; }
+  92%  { opacity: 1; }
+  100% { transform: translateX(260%); opacity: 0; }
+}
+
+/* Live panel border glow when inference is active */
+@keyframes live-border-glow {
+  0%, 100% { border-color: #1a2540; }
+  50%       { border-color: #06b6d466; box-shadow: 0 0 10px #06b6d41a; }
+}
+.live-active-border {
+  animation: live-border-glow 2.2s ease-in-out infinite;
+}
+
 /* Grid scan line overlay */
 .scanlines {
   background-image: repeating-linear-gradient(
