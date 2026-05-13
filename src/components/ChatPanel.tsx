@@ -17,6 +17,14 @@ interface Message {
   streaming?: boolean;
 }
 
+interface ChatSession {
+  id: string;
+  title: string;
+  messages: Message[];
+  createdAt: number;
+  updatedAt: number;
+}
+
 interface Attachment {
   id: string;
   type: "image" | "text" | "other";
@@ -81,6 +89,51 @@ function langFromFilename(name: string): string {
     toml: "toml", xml: "xml", diff: "diff", patch: "diff",
   };
   return m[ext] ?? ext;
+}
+
+// ── Chat session storage ─────────────────────────────────────────────────────
+
+const STORAGE_KEY = "cluster-dash:chats";
+
+function loadSessions(): ChatSession[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed as ChatSession[];
+  } catch {
+    return [];
+  }
+}
+
+function saveSessions(sessions: ChatSession[]) {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
+  } catch {
+    /* quota/serialization — ignore */
+  }
+}
+
+function deriveTitle(messages: Message[]): string {
+  const firstUser = messages.find(m => m.role === "user");
+  if (!firstUser) return "New chat";
+  const t = firstUser.content.trim().replace(/\s+/g, " ");
+  if (!t) return "New chat";
+  return t.length > 40 ? t.slice(0, 40) + "…" : t;
+}
+
+function freshSession(): ChatSession {
+  const now = Date.now();
+  return {
+    id: uid(),
+    title: "New chat",
+    messages: [],
+    createdAt: now,
+    updatedAt: now,
+  };
 }
 
 // ── Inline markdown renderer ─────────────────────────────────────────────────
@@ -348,7 +401,6 @@ function UserBubble({ msg, attPreviews }: { msg: Message; attPreviews?: React.Re
 }
 
 function AssistantBubble({ msg, onRegenerate }: { msg: Message; onRegenerate?: () => void }) {
-  const shortModel = msg.tps !== undefined ? "" : "";
   const showStats = !msg.streaming && (msg.completionTokens !== undefined || msg.tps !== undefined);
 
   return (
@@ -547,10 +599,137 @@ function SliderParam({ label, min, max, step, value, onChange, color }: {
   );
 }
 
+// ── History sidebar ──────────────────────────────────────────────────────────
+
+function HistorySidebar({
+  sessions, activeId, isGenerating,
+  onNew, onSelect, onDelete,
+}: {
+  sessions: ChatSession[];
+  activeId: string | null;
+  isGenerating: boolean;
+  onNew: () => void;
+  onSelect: (id: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  return (
+    <aside style={{
+      width: 220,
+      flexShrink: 0,
+      borderRight: "1px solid #1a2540",
+      background: "#080c14",
+      display: "flex",
+      flexDirection: "column",
+      minHeight: 0,
+    }}>
+      <div style={{ padding: "10px 10px", borderBottom: "1px solid #1a2540" }}>
+        <button
+          onClick={onNew}
+          disabled={isGenerating}
+          title="Start a new chat"
+          style={{
+            width: "100%",
+            background: isGenerating ? "transparent" : "#1e3a8a18",
+            border: "1px solid #3b82f655",
+            borderRadius: 6,
+            padding: "7px 10px",
+            cursor: isGenerating ? "not-allowed" : "pointer",
+            fontSize: 11,
+            color: "#60a5fa",
+            fontFamily: "inherit",
+            fontWeight: 600,
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            opacity: isGenerating ? 0.5 : 1,
+          }}
+        >
+          <span style={{ fontSize: 13, lineHeight: 1 }}>＋</span>
+          NEW CHAT
+        </button>
+      </div>
+      <div style={{ flex: 1, overflowY: "auto", padding: "4px 0" }}>
+        {sessions.length === 0 && (
+          <div style={{ padding: "12px", fontSize: 10, color: "#334155", textAlign: "center" }}>
+            No chats yet
+          </div>
+        )}
+        {sessions.map(s => {
+          const isActive = s.id === activeId;
+          const isDisabled = isGenerating && !isActive;
+          return (
+            <div
+              key={s.id}
+              style={{
+                display: "flex",
+                alignItems: "stretch",
+                borderLeft: `2px solid ${isActive ? "#3b82f6" : "transparent"}`,
+                background: isActive ? "#0c1220" : "transparent",
+              }}
+            >
+              <button
+                onClick={() => !isDisabled && onSelect(s.id)}
+                disabled={isDisabled}
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  textAlign: "left",
+                  background: "transparent",
+                  border: "none",
+                  padding: "8px 4px 8px 10px",
+                  cursor: isDisabled ? "not-allowed" : "pointer",
+                  fontFamily: "inherit",
+                  opacity: isDisabled ? 0.4 : 1,
+                  color: isActive ? "#e2e8f0" : "#94a3b8",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 2,
+                }}
+              >
+                <span style={{
+                  fontSize: 11.5,
+                  lineHeight: 1.35,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  fontWeight: isActive ? 600 : 400,
+                }}>
+                  💬 {s.title}
+                </span>
+                <span style={{ fontSize: 9, color: "#475569" }}>
+                  {s.messages.filter(m => m.role === "user").length} msg · {new Date(s.updatedAt).toLocaleDateString("en-GB", { day: "2-digit", month: "short" })}
+                </span>
+              </button>
+              <button
+                onClick={() => onDelete(s.id)}
+                disabled={isGenerating}
+                title="Delete chat"
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  cursor: isGenerating ? "not-allowed" : "pointer",
+                  color: "#334155",
+                  fontSize: 12,
+                  padding: "0 8px",
+                  opacity: isGenerating ? 0.3 : 0.6,
+                  fontFamily: "inherit",
+                }}
+              >
+                ×
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </aside>
+  );
+}
+
 // ── Main ChatPanel ────────────────────────────────────────────────────────────
 
 export function ChatPanel({ vllmOnline, modelName, maxModelLen }: ChatPanelProps) {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -574,6 +753,27 @@ export function ChatPanel({ vllmOnline, modelName, maxModelLen }: ChatPanelProps
 
   const isQwen3 = (modelName ?? "").toLowerCase().includes("qwen3");
 
+  const activeSession = sessions.find(s => s.id === activeId) ?? null;
+  const messages = activeSession?.messages ?? [];
+
+  // Load sessions from localStorage on mount
+  useEffect(() => {
+    const loaded = loadSessions();
+    if (loaded.length > 0) {
+      const sorted = [...loaded].sort((a, b) => b.updatedAt - a.updatedAt);
+      setSessions(sorted);
+      setActiveId(sorted[0].id);
+    } else {
+      const fresh = freshSession();
+      setSessions([fresh]);
+      setActiveId(fresh.id);
+      saveSessions([fresh]);
+    }
+    // Focus input on section load
+    const t = setTimeout(() => textareaRef.current?.focus(), 50);
+    return () => clearTimeout(t);
+  }, []);
+
   // Live TPS updater during generation
   useEffect(() => {
     if (!isGenerating) return;
@@ -593,6 +793,14 @@ export function ChatPanel({ vllmOnline, modelName, maxModelLen }: ChatPanelProps
     if (atBottom) messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, atBottom]);
 
+  // Refocus input when switching active chat
+  useEffect(() => {
+    if (activeId) {
+      const t = setTimeout(() => textareaRef.current?.focus(), 0);
+      return () => clearTimeout(t);
+    }
+  }, [activeId]);
+
   const handleScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -606,6 +814,63 @@ export function ChatPanel({ vllmOnline, modelName, maxModelLen }: ChatPanelProps
     el.style.height = "auto";
     el.style.height = Math.min(el.scrollHeight, 180) + "px";
   }, []);
+
+  // ── Session helpers ──────────────────────────────────────────────────────
+
+  // Update only state, no persistence — used during streaming
+  const patchActiveMessagesEphemeral = useCallback((updater: (msgs: Message[]) => Message[]) => {
+    setSessions(prev => prev.map(s =>
+      s.id === activeId ? { ...s, messages: updater(s.messages) } : s
+    ));
+  }, [activeId]);
+
+  // Update state + persist + retitle if needed
+  const commitActive = useCallback((updater: (s: ChatSession) => ChatSession) => {
+    setSessions(prev => {
+      const next = prev.map(s => s.id === activeId ? updater(s) : s);
+      next.sort((a, b) => b.updatedAt - a.updatedAt);
+      saveSessions(next);
+      return next;
+    });
+  }, [activeId]);
+
+  const handleNewChat = useCallback(() => {
+    if (isGenerating) return;
+    const fresh = freshSession();
+    setSessions(prev => {
+      const next = [fresh, ...prev];
+      saveSessions(next);
+      return next;
+    });
+    setActiveId(fresh.id);
+    setInput("");
+    setLiveStats({ tps: 0, promptTokens: 0, completionTokens: 0, ttft: 0 });
+    setTimeout(() => textareaRef.current?.focus(), 0);
+  }, [isGenerating]);
+
+  const handleSelectChat = useCallback((id: string) => {
+    if (isGenerating) return;
+    setActiveId(id);
+    setLiveStats({ tps: 0, promptTokens: 0, completionTokens: 0, ttft: 0 });
+  }, [isGenerating]);
+
+  const handleDeleteChat = useCallback((id: string) => {
+    if (isGenerating) return;
+    setSessions(prev => {
+      const next = prev.filter(s => s.id !== id);
+      if (next.length === 0) {
+        const fresh = freshSession();
+        saveSessions([fresh]);
+        setActiveId(fresh.id);
+        return [fresh];
+      }
+      if (id === activeId) {
+        setActiveId(next[0].id);
+      }
+      saveSessions(next);
+      return next;
+    });
+  }, [activeId, isGenerating]);
 
   // File handling
   const processFile = useCallback((file: File) => {
@@ -664,19 +929,30 @@ export function ChatPanel({ vllmOnline, modelName, maxModelLen }: ChatPanelProps
   }, []);
 
   const sendMessage = useCallback(async () => {
-    if ((!input.trim() && attachments.length === 0) || isGenerating || !vllmOnline || !modelName) return;
+    if ((!input.trim() && attachments.length === 0) || isGenerating || !vllmOnline || !modelName || !activeSession) return;
 
     const userContent = buildUserContent(input.trim(), attachments);
     const userMsg: Message = { id: uid(), role: "user", content: typeof userContent === "string" ? userContent : input.trim(), timestamp: Date.now() };
     const assistantId = uid();
     const assistantMsg: Message = { id: assistantId, role: "assistant", content: "", timestamp: Date.now(), streaming: true };
 
-    const currentAttachments = [...attachments];
-    setMessages(prev => [...prev, userMsg, assistantMsg]);
+    const baseMessages = activeSession.messages;
+    const newMessages = [...baseMessages, userMsg, assistantMsg];
+
+    // Persist user message + placeholder + retitle if first
+    commitActive(s => ({
+      ...s,
+      messages: newMessages,
+      title: s.title === "New chat" ? deriveTitle([...baseMessages, userMsg]) : s.title,
+      updatedAt: Date.now(),
+    }));
+
     setInput("");
     setAttachments([]);
     setIsGenerating(true);
     if (textareaRef.current) { textareaRef.current.style.height = "auto"; }
+    // Keep cursor focused on the input after submit
+    setTimeout(() => textareaRef.current?.focus(), 0);
 
     startTimeRef.current = Date.now();
     firstTokenRef.current = 0;
@@ -686,7 +962,7 @@ export function ChatPanel({ vllmOnline, modelName, maxModelLen }: ChatPanelProps
       ? [{ role: "system", content: systemPrompt }]
       : [];
 
-    const historyMessages = [...messages, userMsg].map(m => ({
+    const historyMessages = [...baseMessages, userMsg].map(m => ({
       role: m.role,
       content: m.role === "user" && m.id === userMsg.id ? userContent : m.content,
     }));
@@ -716,7 +992,11 @@ export function ChatPanel({ vllmOnline, modelName, maxModelLen }: ChatPanelProps
 
       if (!res.ok || !res.body) {
         const err = await res.text();
-        setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, content: `Error: ${err}`, streaming: false } : m));
+        commitActive(s => ({
+          ...s,
+          messages: s.messages.map(m => m.id === assistantId ? { ...m, content: `Error: ${err}`, streaming: false } : m),
+          updatedAt: Date.now(),
+        }));
         return;
       }
 
@@ -725,6 +1005,7 @@ export function ChatPanel({ vllmOnline, modelName, maxModelLen }: ChatPanelProps
       let buf = "";
       let accumulated = "";
       let done = false;
+      let finalUsage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null = null;
 
       while (!done) {
         const { done: d, value } = await reader.read();
@@ -747,7 +1028,6 @@ export function ChatPanel({ vllmOnline, modelName, maxModelLen }: ChatPanelProps
             };
 
             const delta = chunk.choices?.[0]?.delta?.content ?? "";
-            const finishReason = chunk.choices?.[0]?.finish_reason;
             const usage = chunk.usage;
 
             if (delta) {
@@ -755,66 +1035,101 @@ export function ChatPanel({ vllmOnline, modelName, maxModelLen }: ChatPanelProps
               tokenCountRef.current++;
               accumulated += delta;
               const snap = accumulated;
-              setMessages(prev => prev.map(m =>
-                m.id === assistantId ? { ...m, content: snap, streaming: true } : m
-              ));
+              patchActiveMessagesEphemeral(msgs =>
+                msgs.map(m => m.id === assistantId ? { ...m, content: snap, streaming: true } : m)
+              );
             }
 
             if (usage) {
+              finalUsage = usage;
               const elapsed = firstTokenRef.current ? (Date.now() - firstTokenRef.current) / 1000 : 0;
               const finalTps = elapsed > 0 ? usage.completion_tokens / elapsed : 0;
               const ttft = firstTokenRef.current ? firstTokenRef.current - startTimeRef.current : 0;
               setLiveStats({ tps: finalTps, promptTokens: usage.prompt_tokens, completionTokens: usage.completion_tokens, ttft });
-              setMessages(prev => prev.map(m =>
-                m.id === assistantId
-                  ? { ...m, content: accumulated, streaming: false, promptTokens: usage.prompt_tokens, completionTokens: usage.completion_tokens, tps: finalTps, ttft }
-                  : m
-              ));
-            } else if (finishReason === "stop" || finishReason === "length") {
-              const elapsed = firstTokenRef.current ? (Date.now() - firstTokenRef.current) / 1000 : 0;
-              const finalTps = elapsed > 0 ? tokenCountRef.current / elapsed : 0;
-              setMessages(prev => prev.map(m =>
-                m.id === assistantId ? { ...m, content: accumulated, streaming: false, tps: finalTps } : m
-              ));
             }
           } catch { /* ignore parse errors */ }
         }
       }
 
-      // Ensure streaming flag is cleared
-      setMessages(prev => prev.map(m => m.id === assistantId ? { ...m, streaming: false } : m));
+      // Final commit with stats
+      const elapsed = firstTokenRef.current ? (Date.now() - firstTokenRef.current) / 1000 : 0;
+      const finalTps = elapsed > 0
+        ? (finalUsage ? finalUsage.completion_tokens / elapsed : tokenCountRef.current / elapsed)
+        : 0;
+      const ttft = firstTokenRef.current ? firstTokenRef.current - startTimeRef.current : 0;
+
+      commitActive(s => ({
+        ...s,
+        messages: s.messages.map(m =>
+          m.id === assistantId
+            ? {
+                ...m,
+                content: accumulated,
+                streaming: false,
+                ...(finalUsage ? { promptTokens: finalUsage.prompt_tokens, completionTokens: finalUsage.completion_tokens } : {}),
+                tps: finalTps,
+                ttft,
+              }
+            : m
+        ),
+        updatedAt: Date.now(),
+      }));
     } catch (err: unknown) {
       if ((err as Error).name !== "AbortError") {
-        setMessages(prev => prev.map(m =>
-          m.id === assistantId ? { ...m, content: `Error: ${(err as Error).message}`, streaming: false } : m
-        ));
+        commitActive(s => ({
+          ...s,
+          messages: s.messages.map(m =>
+            m.id === assistantId ? { ...m, content: `Error: ${(err as Error).message}`, streaming: false } : m
+          ),
+          updatedAt: Date.now(),
+        }));
       } else {
-        setMessages(prev => prev.map(m =>
-          m.id === assistantId ? { ...m, streaming: false } : m
-        ));
+        commitActive(s => ({
+          ...s,
+          messages: s.messages.map(m =>
+            m.id === assistantId ? { ...m, streaming: false } : m
+          ),
+          updatedAt: Date.now(),
+        }));
       }
     } finally {
       setIsGenerating(false);
       abortRef.current = null;
+      // Refocus once more after generation completes
+      setTimeout(() => textareaRef.current?.focus(), 0);
     }
-  }, [input, attachments, isGenerating, vllmOnline, modelName, messages, systemPrompt, temperature, maxTokens, topP, enableThinking, isQwen3, buildUserContent]);
+  }, [input, attachments, isGenerating, vllmOnline, modelName, activeSession, systemPrompt, temperature, maxTokens, topP, enableThinking, isQwen3, buildUserContent, commitActive, patchActiveMessagesEphemeral]);
 
   const stopGeneration = useCallback(() => {
     abortRef.current?.abort();
   }, []);
 
   const regenerate = useCallback(() => {
-    const last = messages.findLast(m => m.role === "user");
-    if (!last || isGenerating) return;
-    setMessages(prev => prev.filter(m => !(m.role === "assistant" && prev.indexOf(m) > prev.indexOf(last))));
-    setInput(last.content);
-    setMessages(prev => prev.filter(m => m.id !== last.id));
-  }, [messages, isGenerating]);
+    if (!activeSession || isGenerating) return;
+    const msgs = activeSession.messages;
+    const lastUser = [...msgs].reverse().find(m => m.role === "user");
+    if (!lastUser) return;
+    // Trim everything from the last user message onward, restore its text to input
+    const cutoff = msgs.findIndex(m => m.id === lastUser.id);
+    commitActive(s => ({
+      ...s,
+      messages: msgs.slice(0, cutoff),
+      updatedAt: Date.now(),
+    }));
+    setInput(lastUser.content);
+  }, [activeSession, isGenerating, commitActive]);
 
   const clearChat = useCallback(() => {
-    setMessages([]);
+    if (isGenerating) return;
+    commitActive(s => ({
+      ...s,
+      messages: [],
+      title: "New chat",
+      updatedAt: Date.now(),
+    }));
     setLiveStats({ tps: 0, promptTokens: 0, completionTokens: 0, ttft: 0 });
-  }, []);
+    setTimeout(() => textareaRef.current?.focus(), 0);
+  }, [commitActive, isGenerating]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -823,199 +1138,210 @@ export function ChatPanel({ vllmOnline, modelName, maxModelLen }: ChatPanelProps
     }
   };
 
-  // Attachment previews for a user message (stored in message order)
-  const [attMap] = useState<Map<string, Attachment[]>>(new Map());
-
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 200px)", minHeight: 600, background: "#06090f", border: "1px solid #1a2540", borderRadius: 12, overflow: "hidden" }}>
+    <div style={{ display: "flex", flexDirection: "row", height: "calc(100vh - 200px)", minHeight: 600, background: "#06090f", border: "1px solid #1a2540", borderRadius: 12, overflow: "hidden", position: "relative" }}>
 
-      {/* ── Header ── */}
-      <div style={{ background: "#0a1018", borderBottom: "1px solid #1a2540", padding: "10px 16px", display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
-        <span style={{ fontSize: 10, letterSpacing: "0.12em", color: "#475569", textTransform: "uppercase" }}>▸ CHAT</span>
-        {modelName ? (
-          <div style={{ display: "flex", alignItems: "center", gap: 6, background: "#10b98112", border: "1px solid #10b98133", borderRadius: 5, padding: "2px 10px" }}>
-            <div style={{ width: 5, height: 5, borderRadius: "50%", background: "#10b981" }} />
-            <span style={{ fontSize: 10, color: "#10b981", fontWeight: 600 }}>{modelName.split("/").pop()?.split("-").slice(0, 3).join("-")}</span>
+      {/* ── History sidebar ── */}
+      <HistorySidebar
+        sessions={sessions}
+        activeId={activeId}
+        isGenerating={isGenerating}
+        onNew={handleNewChat}
+        onSelect={handleSelectChat}
+        onDelete={handleDeleteChat}
+      />
+
+      {/* ── Main chat column ── */}
+      <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0 }}>
+
+        {/* ── Header ── */}
+        <div style={{ background: "#0a1018", borderBottom: "1px solid #1a2540", padding: "10px 16px", display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
+          <span style={{ fontSize: 10, letterSpacing: "0.12em", color: "#475569", textTransform: "uppercase" }}>▸ CHAT</span>
+          {modelName ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 6, background: "#10b98112", border: "1px solid #10b98133", borderRadius: 5, padding: "2px 10px" }}>
+              <div style={{ width: 5, height: 5, borderRadius: "50%", background: "#10b981" }} />
+              <span style={{ fontSize: 10, color: "#10b981", fontWeight: 600 }}>{modelName.split("/").pop()?.split("-").slice(0, 3).join("-")}</span>
+            </div>
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", gap: 6, background: "#ef444412", border: "1px solid #ef444433", borderRadius: 5, padding: "2px 10px" }}>
+              <span style={{ fontSize: 10, color: "#ef4444" }}>vLLM offline — start cluster first</span>
+            </div>
+          )}
+          <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+            {messages.length > 0 && (
+              <span style={{ fontSize: 9, color: "#334155", alignSelf: "center" }}>{messages.length} messages</span>
+            )}
+            <button onClick={() => setShowSettings(v => !v)} style={{ background: showSettings ? "#1e3a8a22" : "transparent", border: `1px solid ${showSettings ? "#3b82f6" : "#1a2540"}`, borderRadius: 5, padding: "4px 12px", cursor: "pointer", fontSize: 10, color: showSettings ? "#60a5fa" : "#475569", fontFamily: "inherit" }}>
+              ⚙ SETTINGS
+            </button>
+            <button onClick={clearChat} disabled={messages.length === 0 || isGenerating} style={{ background: "transparent", border: "1px solid #1a2540", borderRadius: 5, padding: "4px 12px", cursor: (messages.length === 0 || isGenerating) ? "not-allowed" : "pointer", fontSize: 10, color: "#475569", fontFamily: "inherit", opacity: (messages.length === 0 || isGenerating) ? 0.4 : 1 }}>
+              CLEAR
+            </button>
           </div>
-        ) : (
-          <div style={{ display: "flex", alignItems: "center", gap: 6, background: "#ef444412", border: "1px solid #ef444433", borderRadius: 5, padding: "2px 10px" }}>
-            <span style={{ fontSize: 10, color: "#ef4444" }}>vLLM offline — start cluster first</span>
+        </div>
+
+        {/* ── Stats bar ── */}
+        <StatsBar stats={liveStats} maxModelLen={maxModelLen} isGenerating={isGenerating} />
+
+        {/* ── Settings panel ── */}
+        {showSettings && (
+          <SettingsPanel
+            systemPrompt={systemPrompt} onSystemPrompt={setSystemPrompt}
+            temperature={temperature} onTemperature={setTemperature}
+            maxTokens={maxTokens} onMaxTokens={setMaxTokens}
+            topP={topP} onTopP={setTopP}
+            enableThinking={enableThinking} onEnableThinking={setEnableThinking}
+            isQwen3={isQwen3}
+          />
+        )}
+
+        {/* ── Messages ── */}
+        <div
+          ref={scrollRef}
+          onScroll={handleScroll}
+          style={{ flex: 1, overflowY: "auto", padding: "20px 20px 8px", display: "flex", flexDirection: "column" }}
+        >
+          {messages.length === 0 && (
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, color: "#1e293b" }}>
+              <div style={{ fontSize: 40 }}>⚡</div>
+              <div style={{ fontSize: 14, color: "#334155", textAlign: "center", lineHeight: 1.6 }}>
+                {vllmOnline ? "Start a conversation" : "Launch the cluster from the CONTROL tab first"}
+              </div>
+              {vllmOnline && (
+                <div style={{ fontSize: 11, color: "#1e3a5f", textAlign: "center" }}>
+                  Paste files or images · Shift+Enter for newline · Enter to send
+                </div>
+              )}
+            </div>
+          )}
+
+          {messages.map((msg, idx) =>
+            msg.role === "user" ? (
+              <UserBubble key={msg.id} msg={msg} />
+            ) : (
+              <AssistantBubble
+                key={msg.id}
+                msg={msg}
+                onRegenerate={idx === messages.length - 1 ? regenerate : undefined}
+              />
+            )
+          )}
+          <div ref={messagesEndRef} />
+        </div>
+
+        {/* ── Scroll to bottom button ── */}
+        {!atBottom && (
+          <div style={{ position: "absolute", bottom: 160, right: 28, zIndex: 10 }}>
+            <button
+              onClick={() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); setAtBottom(true); }}
+              style={{ background: "#0c1220", border: "1px solid #3b82f644", borderRadius: "50%", width: 34, height: 34, cursor: "pointer", fontSize: 14, color: "#3b82f6", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 8px #00000088" }}
+            >
+              ↓
+            </button>
           </div>
         )}
-        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-          {messages.length > 0 && (
-            <span style={{ fontSize: 9, color: "#334155", alignSelf: "center" }}>{messages.length} messages</span>
-          )}
-          <button onClick={() => setShowSettings(v => !v)} style={{ background: showSettings ? "#1e3a8a22" : "transparent", border: `1px solid ${showSettings ? "#3b82f6" : "#1a2540"}`, borderRadius: 5, padding: "4px 12px", cursor: "pointer", fontSize: 10, color: showSettings ? "#60a5fa" : "#475569", fontFamily: "inherit" }}>
-            ⚙ SETTINGS
-          </button>
-          <button onClick={clearChat} disabled={messages.length === 0} style={{ background: "transparent", border: "1px solid #1a2540", borderRadius: 5, padding: "4px 12px", cursor: messages.length === 0 ? "not-allowed" : "pointer", fontSize: 10, color: "#475569", fontFamily: "inherit", opacity: messages.length === 0 ? 0.4 : 1 }}>
-            CLEAR
-          </button>
-        </div>
-      </div>
 
-      {/* ── Stats bar ── */}
-      <StatsBar stats={liveStats} maxModelLen={maxModelLen} isGenerating={isGenerating} />
-
-      {/* ── Settings panel ── */}
-      {showSettings && (
-        <SettingsPanel
-          systemPrompt={systemPrompt} onSystemPrompt={setSystemPrompt}
-          temperature={temperature} onTemperature={setTemperature}
-          maxTokens={maxTokens} onMaxTokens={setMaxTokens}
-          topP={topP} onTopP={setTopP}
-          enableThinking={enableThinking} onEnableThinking={setEnableThinking}
-          isQwen3={isQwen3}
-        />
-      )}
-
-      {/* ── Messages ── */}
-      <div
-        ref={scrollRef}
-        onScroll={handleScroll}
-        style={{ flex: 1, overflowY: "auto", padding: "20px 20px 8px", display: "flex", flexDirection: "column" }}
-      >
-        {messages.length === 0 && (
-          <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, color: "#1e293b" }}>
-            <div style={{ fontSize: 40 }}>⚡</div>
-            <div style={{ fontSize: 14, color: "#334155", textAlign: "center", lineHeight: 1.6 }}>
-              {vllmOnline ? "Start a conversation" : "Launch the cluster from the CONTROL tab first"}
+        {/* ── Input area ── */}
+        <div
+          style={{ borderTop: "1px solid #1a2540", background: "#0a1018", flexShrink: 0 }}
+          onDragOver={e => { e.preventDefault(); setIsDragging(true); }}
+          onDragLeave={() => setIsDragging(false)}
+          onDrop={handleDrop}
+        >
+          {isDragging && (
+            <div style={{ position: "absolute", inset: 0, background: "#3b82f608", border: "2px dashed #3b82f644", borderRadius: 12, zIndex: 20, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
+              <span style={{ fontSize: 13, color: "#3b82f6" }}>Drop files here</span>
             </div>
-            {vllmOnline && (
-              <div style={{ fontSize: 11, color: "#1e3a5f", textAlign: "center" }}>
-                Paste files or images · Shift+Enter for newline · Enter to send
-              </div>
+          )}
+
+          {/* Attachment previews */}
+          {attachments.length > 0 && (
+            <div style={{ padding: "10px 14px 0", display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {attachments.map(att => (
+                <AttachmentPill key={att.id} att={att} onRemove={() => setAttachments(prev => prev.filter(a => a.id !== att.id))} />
+              ))}
+            </div>
+          )}
+
+          <div style={{ padding: "10px 14px", display: "flex", gap: 10, alignItems: "flex-end" }}>
+            {/* File attach button */}
+            <label title="Attach file" style={{ cursor: "pointer", color: "#334155", fontSize: 16, paddingBottom: 10, flexShrink: 0 }}>
+              📎
+              <input
+                type="file"
+                multiple
+                style={{ display: "none" }}
+                onChange={e => Array.from(e.target.files ?? []).forEach(processFile)}
+              />
+            </label>
+
+            <textarea
+              ref={textareaRef}
+              value={input}
+              onChange={e => { setInput(e.target.value); adjustTextarea(); }}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+              placeholder={vllmOnline ? (isGenerating ? "Generating reply… (type to queue next message)" : "Message… (Enter to send, Shift+Enter for newline, paste files/images)") : "vLLM offline"}
+              disabled={!vllmOnline}
+              rows={1}
+              style={{
+                flex: 1,
+                background: "#06090f",
+                border: `1px solid ${isDragging ? "#3b82f6" : "#1a2540"}`,
+                borderRadius: 10,
+                padding: "10px 14px",
+                fontSize: 13.5,
+                color: "#e2e8f0",
+                fontFamily: "inherit",
+                resize: "none",
+                outline: "none",
+                lineHeight: 1.6,
+                minHeight: 42,
+                maxHeight: 180,
+                boxSizing: "border-box",
+                transition: "border-color 0.15s",
+                overflowY: "auto",
+              }}
+            />
+
+            {isGenerating ? (
+              <button
+                onClick={stopGeneration}
+                title="Stop generation"
+                style={{ background: "#ef444418", border: "1px solid #ef444455", borderRadius: 10, padding: "10px 14px", cursor: "pointer", fontSize: 12, color: "#ef4444", fontFamily: "inherit", fontWeight: 700, flexShrink: 0 }}
+              >
+                ■ STOP
+              </button>
+            ) : (
+              <button
+                onClick={sendMessage}
+                disabled={!vllmOnline || (!input.trim() && attachments.length === 0)}
+                title="Send (Enter)"
+                style={{
+                  background: vllmOnline && (input.trim() || attachments.length > 0) ? "#3b82f618" : "#111827",
+                  border: `1px solid ${vllmOnline && (input.trim() || attachments.length > 0) ? "#3b82f655" : "#1a2540"}`,
+                  borderRadius: 10, padding: "10px 16px", cursor: vllmOnline && (input.trim() || attachments.length > 0) ? "pointer" : "not-allowed",
+                  fontSize: 14, color: vllmOnline && (input.trim() || attachments.length > 0) ? "#3b82f6" : "#334155",
+                  fontFamily: "inherit", fontWeight: 700, flexShrink: 0, transition: "all 0.15s",
+                  opacity: (!vllmOnline || (!input.trim() && attachments.length === 0)) ? 0.5 : 1,
+                }}
+              >
+                ➤
+              </button>
             )}
           </div>
-        )}
 
-        {messages.map((msg, idx) =>
-          msg.role === "user" ? (
-            <UserBubble key={msg.id} msg={msg} />
-          ) : (
-            <AssistantBubble
-              key={msg.id}
-              msg={msg}
-              onRegenerate={idx === messages.length - 1 ? regenerate : undefined}
-            />
-          )
-        )}
-        <div ref={messagesEndRef} />
-      </div>
-
-      {/* ── Scroll to bottom button ── */}
-      {!atBottom && (
-        <div style={{ position: "absolute", bottom: 160, right: 28, zIndex: 10 }}>
-          <button
-            onClick={() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); setAtBottom(true); }}
-            style={{ background: "#0c1220", border: "1px solid #3b82f644", borderRadius: "50%", width: 34, height: 34, cursor: "pointer", fontSize: 14, color: "#3b82f6", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 8px #00000088" }}
-          >
-            ↓
-          </button>
-        </div>
-      )}
-
-      {/* ── Input area ── */}
-      <div
-        style={{ borderTop: "1px solid #1a2540", background: "#0a1018", flexShrink: 0 }}
-        onDragOver={e => { e.preventDefault(); setIsDragging(true); }}
-        onDragLeave={() => setIsDragging(false)}
-        onDrop={handleDrop}
-      >
-        {isDragging && (
-          <div style={{ position: "absolute", inset: 0, background: "#3b82f608", border: "2px dashed #3b82f644", borderRadius: 12, zIndex: 20, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-            <span style={{ fontSize: 13, color: "#3b82f6" }}>Drop files here</span>
+          <div style={{ padding: "0 14px 8px", display: "flex", gap: 12, alignItems: "center" }}>
+            <span style={{ fontSize: 9, color: "#1e293b" }}>Temp {temperature.toFixed(2)}</span>
+            <span style={{ fontSize: 9, color: "#1e293b" }}>Top-P {topP.toFixed(2)}</span>
+            <span style={{ fontSize: 9, color: "#1e293b" }}>Max {maxTokens.toLocaleString()} tokens</span>
+            {isQwen3 && (
+              <span style={{ fontSize: 9, color: enableThinking ? "#6366f1" : "#1e293b" }}>
+                {enableThinking ? "🤔 thinking on" : "thinking off"}
+              </span>
+            )}
+            <span style={{ fontSize: 9, color: "#1e293b", marginLeft: "auto" }}>⇧↵ newline · ↵ send</span>
           </div>
-        )}
-
-        {/* Attachment previews */}
-        {attachments.length > 0 && (
-          <div style={{ padding: "10px 14px 0", display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {attachments.map(att => (
-              <AttachmentPill key={att.id} att={att} onRemove={() => setAttachments(prev => prev.filter(a => a.id !== att.id))} />
-            ))}
-          </div>
-        )}
-
-        <div style={{ padding: "10px 14px", display: "flex", gap: 10, alignItems: "flex-end" }}>
-          {/* File attach button */}
-          <label title="Attach file" style={{ cursor: "pointer", color: "#334155", fontSize: 16, paddingBottom: 10, flexShrink: 0 }}>
-            📎
-            <input
-              type="file"
-              multiple
-              style={{ display: "none" }}
-              onChange={e => Array.from(e.target.files ?? []).forEach(processFile)}
-            />
-          </label>
-
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={e => { setInput(e.target.value); adjustTextarea(); }}
-            onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
-            placeholder={vllmOnline ? "Message… (Enter to send, Shift+Enter for newline, paste files/images)" : "vLLM offline"}
-            disabled={!vllmOnline || isGenerating}
-            rows={1}
-            style={{
-              flex: 1,
-              background: "#06090f",
-              border: `1px solid ${isDragging ? "#3b82f6" : "#1a2540"}`,
-              borderRadius: 10,
-              padding: "10px 14px",
-              fontSize: 13.5,
-              color: "#e2e8f0",
-              fontFamily: "inherit",
-              resize: "none",
-              outline: "none",
-              lineHeight: 1.6,
-              minHeight: 42,
-              maxHeight: 180,
-              boxSizing: "border-box",
-              transition: "border-color 0.15s",
-              overflowY: "auto",
-            }}
-          />
-
-          {isGenerating ? (
-            <button
-              onClick={stopGeneration}
-              title="Stop generation"
-              style={{ background: "#ef444418", border: "1px solid #ef444455", borderRadius: 10, padding: "10px 14px", cursor: "pointer", fontSize: 12, color: "#ef4444", fontFamily: "inherit", fontWeight: 700, flexShrink: 0 }}
-            >
-              ■ STOP
-            </button>
-          ) : (
-            <button
-              onClick={sendMessage}
-              disabled={!vllmOnline || (!input.trim() && attachments.length === 0)}
-              title="Send (Enter)"
-              style={{
-                background: vllmOnline && (input.trim() || attachments.length > 0) ? "#3b82f618" : "#111827",
-                border: `1px solid ${vllmOnline && (input.trim() || attachments.length > 0) ? "#3b82f655" : "#1a2540"}`,
-                borderRadius: 10, padding: "10px 16px", cursor: vllmOnline && (input.trim() || attachments.length > 0) ? "pointer" : "not-allowed",
-                fontSize: 14, color: vllmOnline && (input.trim() || attachments.length > 0) ? "#3b82f6" : "#334155",
-                fontFamily: "inherit", fontWeight: 700, flexShrink: 0, transition: "all 0.15s",
-                opacity: (!vllmOnline || (!input.trim() && attachments.length === 0)) ? 0.5 : 1,
-              }}
-            >
-              ➤
-            </button>
-          )}
-        </div>
-
-        <div style={{ padding: "0 14px 8px", display: "flex", gap: 12, alignItems: "center" }}>
-          <span style={{ fontSize: 9, color: "#1e293b" }}>Temp {temperature.toFixed(2)}</span>
-          <span style={{ fontSize: 9, color: "#1e293b" }}>Top-P {topP.toFixed(2)}</span>
-          <span style={{ fontSize: 9, color: "#1e293b" }}>Max {maxTokens.toLocaleString()} tokens</span>
-          {isQwen3 && (
-            <span style={{ fontSize: 9, color: enableThinking ? "#6366f1" : "#1e293b" }}>
-              {enableThinking ? "🤔 thinking on" : "thinking off"}
-            </span>
-          )}
-          <span style={{ fontSize: 9, color: "#1e293b", marginLeft: "auto" }}>⇧↵ newline · ↵ send</span>
         </div>
       </div>
     </div>

@@ -4,7 +4,6 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { NodeCard } from "@/components/NodeCard";
 import { KpiBar } from "@/components/KpiBar";
 import { VllmPanel } from "@/components/VllmPanel";
-import { DownloadPanel } from "@/components/DownloadPanel";
 import { SystemTasksPanel } from "@/components/SystemTasksPanel";
 import { ControlPanel } from "@/components/ControlPanel";
 import { Pm2Panel } from "@/components/Pm2Panel";
@@ -12,6 +11,7 @@ import { LogsPanel } from "@/components/LogsPanel";
 import { ChatPanel } from "@/components/ChatPanel";
 import { AgentPanel } from "@/components/AgentPanel";
 import { InferencePanel } from "@/components/InferencePanel";
+import { BackupPanel } from "@/components/BackupPanel";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface GpuData {
@@ -98,7 +98,7 @@ export default function DashPage() {
   });
   const [tasksData, setTasksData] = useState<TasksData | null>(null);
   const [tasksLoading, setTasksLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<"overview" | "inference" | "tasks" | "control" | "pm2" | "logs" | "chat" | "agent">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "inference" | "tasks" | "control" | "backup" | "pm2" | "logs" | "chat" | "agent">("overview");
   const tasksHasData = useRef(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -174,6 +174,31 @@ export default function DashPage() {
   const nodesOnline =
     (data?.nodes.spark1?.online ? 1 : 0) + (data?.nodes.spark2?.online ? 1 : 0);
 
+  // Single-node mode: we have data and spark2 is missing or offline.
+  // In this mode the dashboard treats spark1 as a standalone master:
+  // - CLUSTER CONTROL and SYSTEM TASKS tabs are hidden (the latter merges into OVERVIEW).
+  // - KpiBar drops the worker container and reports "x / 1".
+  // - System-tasks content renders inline below the overview.
+  const singleNodeMode =
+    data !== null && (!data.nodes.spark2 || !data.nodes.spark2.online);
+  const nodesTotal = singleNodeMode ? 1 : 2;
+
+  // If the active tab disappears when we drop into single-node mode, fall back
+  // to OVERVIEW so the user is never staring at a stale/hidden panel.
+  useEffect(() => {
+    if (singleNodeMode && (activeTab === "control" || activeTab === "tasks")) {
+      setActiveTab("overview");
+    }
+  }, [singleNodeMode, activeTab]);
+
+  // Poll tasks data in single-node mode too — OVERVIEW now embeds it.
+  useEffect(() => {
+    if (!(singleNodeMode && activeTab === "overview")) return;
+    pollTasks();
+    const id = setInterval(pollTasks, 5000);
+    return () => clearInterval(id);
+  }, [singleNodeMode, activeTab, pollTasks]);
+
   const now = new Date();
 
   return (
@@ -186,6 +211,14 @@ export default function DashPage() {
         padding: "0 0 24px 0",
       }}
     >
+      {/* ── Sticky top bar (header + tab nav travel together) ── */}
+      <div
+        style={{
+          position: "sticky",
+          top: 0,
+          zIndex: 50,
+        }}
+      >
       {/* ── Top Header ── */}
       <div
         style={{
@@ -195,9 +228,6 @@ export default function DashPage() {
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          position: "sticky",
-          top: 0,
-          zIndex: 50,
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
@@ -223,37 +253,53 @@ export default function DashPage() {
                 SPARK CLUSTER
               </div>
               <div style={{ fontSize: 9, color: "#475569", letterSpacing: "0.1em" }}>
-                MISSION CONTROL · 2× NVIDIA GB10 · 243 GiB GPU
+                {singleNodeMode
+                  ? "MISSION CONTROL · 1× NVIDIA GB10 · 121.7 GiB GPU"
+                  : "MISSION CONTROL · 2× NVIDIA GB10 · 243 GiB GPU"}
               </div>
             </div>
           </div>
 
           {/* Status pill */}
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 5,
-              padding: "3px 10px",
-              borderRadius: 20,
-              background: nodesOnline === 2 ? "#10b98112" : "#ef444412",
-              border: `1px solid ${nodesOnline === 2 ? "#10b98133" : "#ef444433"}`,
-            }}
-          >
-            <div
-              style={{
-                width: 6,
-                height: 6,
-                borderRadius: "50%",
-                background: nodesOnline === 2 ? "#10b981" : "#ef4444",
-                position: "relative",
-              }}
-              className={nodesOnline === 2 ? "pulse-dot" : ""}
-            />
-            <span style={{ fontSize: 10, color: nodesOnline === 2 ? "#10b981" : "#ef4444", letterSpacing: "0.08em" }}>
-              {nodesOnline === 2 ? "ALL SYSTEMS GO" : nodesOnline === 1 ? "DEGRADED" : "OFFLINE"}
-            </span>
-          </div>
+          {(() => {
+            const spark1Up = data?.nodes.spark1?.online ?? false;
+            const healthy = singleNodeMode ? spark1Up : nodesOnline === 2;
+            const label = singleNodeMode
+              ? spark1Up
+                ? "STANDALONE"
+                : "OFFLINE"
+              : nodesOnline === 2
+                ? "ALL SYSTEMS GO"
+                : nodesOnline === 1
+                  ? "DEGRADED"
+                  : "OFFLINE";
+            const color = healthy ? "#10b981" : "#ef4444";
+            return (
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 5,
+                  padding: "3px 10px",
+                  borderRadius: 20,
+                  background: healthy ? "#10b98112" : "#ef444412",
+                  border: `1px solid ${healthy ? "#10b98133" : "#ef444433"}`,
+                }}
+              >
+                <div
+                  style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: "50%",
+                    background: color,
+                    position: "relative",
+                  }}
+                  className={healthy ? "pulse-dot" : ""}
+                />
+                <span style={{ fontSize: 10, color, letterSpacing: "0.08em" }}>{label}</span>
+              </div>
+            );
+          })()}
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
@@ -294,12 +340,26 @@ export default function DashPage() {
           padding: "0 20px",
         }}
       >
-        {(["overview", "inference", "tasks", "control", "pm2", "logs", "chat", "agent"] as const).map((tab) => {
-          const labels: Record<string, string> = { overview: "OVERVIEW", inference: "INFERENCE", tasks: "SYSTEM TASKS", control: "CLUSTER CONTROL", pm2: "PM2", logs: "LOGS", chat: "CHAT", agent: "◈ AGENT" };
+        {(["overview", "inference", "tasks", "control", "backup", "pm2", "logs", "chat", "agent"] as const)
+          .filter((tab) => !(singleNodeMode && (tab === "tasks" || tab === "control")))
+          .map((tab) => {
+          const labels: Record<string, string> = { overview: singleNodeMode ? "DASHBOARD" : "OVERVIEW", inference: "INFERENCE", tasks: "SYSTEM TASKS", control: "CLUSTER CONTROL", backup: "◇ BACKUP", pm2: "PM2", logs: "LOGS", chat: "CHAT", agent: "◈ AGENT" };
           const active = activeTab === tab;
-          const accentColor = tab === "agent" ? "#8b5cf6" : tab === "inference" ? "#06b6d4" : "#3b82f6";
-          const activeText = tab === "agent" ? "#a78bfa" : tab === "inference" ? "#22d3ee" : "#3b82f6";
-          const inactiveText = tab === "agent" ? "#5b3f8a" : tab === "inference" ? "#0f4a5a" : "#334155";
+          const accentColor =
+            tab === "agent" ? "#8b5cf6"
+            : tab === "inference" ? "#06b6d4"
+            : tab === "backup" ? "#f59e0b"
+            : "#3b82f6";
+          const activeText =
+            tab === "agent" ? "#a78bfa"
+            : tab === "inference" ? "#22d3ee"
+            : tab === "backup" ? "#fbbf24"
+            : "#3b82f6";
+          const inactiveText =
+            tab === "agent" ? "#5b3f8a"
+            : tab === "inference" ? "#0f4a5a"
+            : tab === "backup" ? "#5b4520"
+            : "#334155";
           return (
             <button
               key={tab}
@@ -324,6 +384,7 @@ export default function DashPage() {
           );
         })}
       </div>
+      </div>
 
       {/* ── Main content ── */}
       <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 16 }}>
@@ -331,7 +392,7 @@ export default function DashPage() {
         <section>
           <KpiBar
             nodesOnline={nodesOnline}
-            nodesTotal={2}
+            nodesTotal={nodesTotal}
             modelName={data?.vllm.model ?? null}
             contextLen={data?.vllm.maxModelLen ?? null}
             vllmOnline={data?.vllm.online ?? false}
@@ -342,22 +403,29 @@ export default function DashPage() {
             gpuTemp1={data?.nodes.spark1?.gpu.temp ?? null}
             gpuTemp2={data?.nodes.spark2?.gpu.temp ?? null}
             headUptimeSec={data?.vllm.headUptimeSec ?? null}
+            singleNode={singleNodeMode}
           />
         </section>
 
         {/* ── OVERVIEW TAB ── */}
         {activeTab === "overview" && (
           <>
-            {/* Nodes grid */}
+            {/* Nodes grid — in single-node mode the spark2 slot holds SystemTasks */}
             <section>
               <div style={{ fontSize: 9, color: "#334155", letterSpacing: "0.14em", marginBottom: 8, textTransform: "uppercase" }}>
-                ▸ COMPUTE NODES
+                {singleNodeMode ? "▸ ACTIVE NODE · SYSTEM TASKS" : "▸ COMPUTE NODES"}
               </div>
               <div
                 style={{
                   display: "grid",
                   gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))",
                   gap: 14,
+                  // Single-node mode: pin both cells to one fixed-height row so the
+                  // System Tasks panel can grow/shrink internally (scrolling content)
+                  // without resizing the row and shifting everything below.
+                  ...(singleNodeMode
+                    ? { gridAutoRows: "480px", alignItems: "stretch" as const }
+                    : { alignItems: "start" as const }),
                 }}
               >
                 <NodeCard
@@ -367,13 +435,17 @@ export default function DashPage() {
                   data={data?.nodes.spark1 ?? null}
                   history={history.spark1}
                 />
-                <NodeCard
-                  label="SPARK2"
-                  role="WORKER"
-                  ip="192.168.100.11"
-                  data={data?.nodes.spark2 ?? null}
-                  history={history.spark2}
-                />
+                {singleNodeMode ? (
+                  <SystemTasksPanel data={tasksData} loading={tasksLoading} singleNode />
+                ) : (
+                  <NodeCard
+                    label="SPARK2"
+                    role="WORKER"
+                    ip="192.168.100.11"
+                    data={data?.nodes.spark2 ?? null}
+                    history={history.spark2}
+                  />
+                )}
               </div>
             </section>
 
@@ -396,15 +468,6 @@ export default function DashPage() {
               />
             </section>
 
-            {/* Download panel */}
-            {data?.downloads && data.downloads.length > 0 && (
-              <section>
-                <div style={{ fontSize: 9, color: "#334155", letterSpacing: "0.14em", marginBottom: 8, textTransform: "uppercase" }}>
-                  ▸ MODEL DOWNLOADS
-                </div>
-                <DownloadPanel downloads={data.downloads} />
-              </section>
-            )}
           </>
         )}
 
@@ -440,6 +503,16 @@ export default function DashPage() {
               vllmModel={data?.vllm.model ?? null}
               vllmOnline={data?.vllm.online ?? false}
             />
+          </section>
+        )}
+
+        {/* ── BACKUP TAB ── */}
+        {activeTab === "backup" && (
+          <section>
+            <div style={{ fontSize: 9, color: "#334155", letterSpacing: "0.14em", marginBottom: 8, textTransform: "uppercase" }}>
+              ▸ BACKUP MANAGER · restic · /mnt/spark-backup
+            </div>
+            <BackupPanel />
           </section>
         )}
 
