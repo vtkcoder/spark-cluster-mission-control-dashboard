@@ -47,9 +47,9 @@ interface KpiBarProps {
   workerContainer: string;
   requestsRunning: number;
   requestsWaiting: number;
-  gpuTemp1: number | null;
-  gpuTemp2: number | null;
+  gpuTemps: Array<number | null>;
   headUptimeSec: number | null;
+  singleNode?: boolean;
 }
 
 function containerLabel(s: string): string {
@@ -88,14 +88,18 @@ export function KpiBar({
   workerContainer,
   requestsRunning,
   requestsWaiting,
-  gpuTemp1,
-  gpuTemp2,
+  gpuTemps,
   headUptimeSec,
+  singleNode = false,
 }: KpiBarProps) {
-  const avgTemp =
-    gpuTemp1 !== null && gpuTemp2 !== null
-      ? Math.round((gpuTemp1 + gpuTemp2) / 2)
-      : (gpuTemp1 ?? gpuTemp2 ?? null);
+  // Average GPU temp across all present (non-null) nodes. In single-node mode
+  // only spark1 (gpuTemps[0]) is considered.
+  const tempSamples = (singleNode ? gpuTemps.slice(0, 1) : gpuTemps).filter(
+    (t): t is number => t !== null,
+  );
+  const avgTemp = tempSamples.length
+    ? Math.round(tempSamples.reduce((a, b) => a + b, 0) / tempSamples.length)
+    : null;
 
   const shortModel = modelName
     ? modelName.split("/").pop()?.replace(/-FP8$/, "")?.replace(/-Instruct.*$/, "") ?? modelName
@@ -115,15 +119,17 @@ export function KpiBar({
         color={nodesOnline === nodesTotal ? "#10b981" : "#ef4444"}
       />
       <KpiChip
-        label="VLLM HEAD"
+        label={singleNode ? "VLLM" : "VLLM HEAD"}
         value={containerLabel(headContainer)}
         color={containerColor(headContainer)}
       />
-      <KpiChip
-        label="VLLM WORKER"
-        value={containerLabel(workerContainer)}
-        color={containerColor(workerContainer)}
-      />
+      {!singleNode && (
+        <KpiChip
+          label="VLLM WORKER"
+          value={containerLabel(workerContainer)}
+          color={containerColor(workerContainer)}
+        />
+      )}
       <KpiChip
         label="MODEL"
         value={vllmOnline ? (shortModel ?? "—") : "OFFLINE"}
@@ -140,7 +146,7 @@ export function KpiBar({
         color={requestsRunning > 0 ? "#f59e0b" : "#10b981"}
       />
       <KpiChip
-        label="AVG GPU TEMP"
+        label={singleNode ? "GPU TEMP" : "AVG GPU TEMP"}
         value={avgTemp !== null ? `${avgTemp}°C` : "—"}
         color={
           avgTemp === null ? "#475569" : avgTemp < 60 ? "#10b981" : avgTemp < 75 ? "#f59e0b" : "#ef4444"

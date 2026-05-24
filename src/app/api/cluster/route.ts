@@ -82,10 +82,10 @@ interface VllmModel {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-async function getNodeStats(remote: boolean): Promise<NodeRaw | null> {
+async function getNodeStats(host?: string): Promise<NodeRaw | null> {
   try {
-    const cmd = remote
-      ? `ssh -o ConnectTimeout=3 -o BatchMode=yes spark2 python3 /dev/stdin < ${COLLECTOR_PATH}`
+    const cmd = host
+      ? `ssh -o ConnectTimeout=3 -o BatchMode=yes ${host} python3 /dev/stdin < ${COLLECTOR_PATH}`
       : `python3 ${COLLECTOR_PATH}`;
     const { stdout } = await execAsync(cmd, { timeout: 6000 });
     return JSON.parse(stdout.trim()) as NodeRaw;
@@ -94,10 +94,10 @@ async function getNodeStats(remote: boolean): Promise<NodeRaw | null> {
   }
 }
 
-async function getDockerStatus(container: string, remote: boolean): Promise<string> {
+async function getDockerStatus(container: string, host?: string): Promise<string> {
   try {
     const inspect = `docker inspect ${container} --format '{{.State.Status}}' 2>/dev/null || echo absent`;
-    const cmd = remote ? `ssh -o ConnectTimeout=3 -o BatchMode=yes spark2 "${inspect}"` : inspect;
+    const cmd = host ? `ssh -o ConnectTimeout=3 -o BatchMode=yes ${host} "${inspect}"` : inspect;
     const { stdout } = await execAsync(cmd, { timeout: 4000 });
     return stdout.trim() || "absent";
   } catch {
@@ -105,10 +105,10 @@ async function getDockerStatus(container: string, remote: boolean): Promise<stri
   }
 }
 
-async function getDockerUptime(container: string, remote: boolean): Promise<number | null> {
+async function getDockerUptime(container: string, host?: string): Promise<number | null> {
   try {
     const inspect = `docker inspect ${container} --format '{{.State.StartedAt}}' 2>/dev/null`;
-    const cmd = remote ? `ssh -o ConnectTimeout=3 -o BatchMode=yes spark2 "${inspect}"` : inspect;
+    const cmd = host ? `ssh -o ConnectTimeout=3 -o BatchMode=yes ${host} "${inspect}"` : inspect;
     const { stdout } = await execAsync(cmd, { timeout: 4000 });
     const started = stdout.trim();
     if (!started) return null;
@@ -161,10 +161,10 @@ async function getVllmMetrics(): Promise<Record<string, number> | null> {
   }
 }
 
-async function getDiskBytes(path: string, remote: boolean): Promise<number> {
+async function getDiskBytes(path: string, host?: string): Promise<number> {
   try {
     const cmd = `du -sb '${path}' 2>/dev/null | awk '{print $1}'`;
-    const full = remote ? `ssh -o ConnectTimeout=3 -o BatchMode=yes spark2 "${cmd}"` : cmd;
+    const full = host ? `ssh -o ConnectTimeout=3 -o BatchMode=yes ${host} "${cmd}"` : cmd;
     const { stdout } = await execAsync(full, { timeout: 5000 });
     return parseInt(stdout.trim()) || 0;
   } catch {
@@ -172,10 +172,10 @@ async function getDiskBytes(path: string, remote: boolean): Promise<number> {
   }
 }
 
-async function hasIncompleteBlobs(path: string, remote: boolean): Promise<boolean> {
+async function hasIncompleteBlobs(path: string, host?: string): Promise<boolean> {
   try {
     const cmd = `ls '${path}/blobs/' 2>/dev/null | grep -c '\\.incomplete' || echo 0`;
-    const full = remote ? `ssh -o ConnectTimeout=3 -o BatchMode=yes spark2 "${cmd}"` : cmd;
+    const full = host ? `ssh -o ConnectTimeout=3 -o BatchMode=yes ${host} "${cmd}"` : cmd;
     const { stdout } = await execAsync(full, { timeout: 3000 });
     return parseInt(stdout.trim()) > 0;
   } catch {
@@ -183,10 +183,10 @@ async function hasIncompleteBlobs(path: string, remote: boolean): Promise<boolea
   }
 }
 
-async function getNetworkRx(iface: string, remote: boolean): Promise<number> {
+async function getNetworkRx(iface: string, host?: string): Promise<number> {
   try {
     const cmd = `cat /proc/net/dev | grep '${iface}' | awk '{print $2}'`;
-    const full = remote ? `ssh -o ConnectTimeout=3 -o BatchMode=yes spark2 "${cmd}"` : cmd;
+    const full = host ? `ssh -o ConnectTimeout=3 -o BatchMode=yes ${host} "${cmd}"` : cmd;
     const { stdout } = await execAsync(full, { timeout: 2000 });
     return parseInt(stdout.trim()) || 0;
   } catch {
@@ -229,8 +229,8 @@ export async function GET() {
     cacheDirs.map(async (key) => {
       const model = cacheKeyToModelId(key);
       const dir = `${HF_HUB}/${key}`;
-      const bytes = await getDiskBytes(dir, false);
-      const active = await hasIncompleteBlobs(dir, false);
+      const bytes = await getDiskBytes(dir);
+      const active = await hasIncompleteBlobs(dir);
       const expectedBytes = KNOWN_EXPECTED_BYTES[model] ?? 0;
       return { model, dir, bytes, active, expectedBytes };
     })
@@ -239,25 +239,29 @@ export async function GET() {
   const [
     spark1,
     spark2,
+    spark3,
     vllmModels,
     vllmMetrics,
     headStatus,
     workerStatus,
+    worker2Status,
     webuiStatus,
     headUptime,
     s1RxBytes,
     s2RxBytes,
   ] = await Promise.all([
-    getNodeStats(false),
-    getNodeStats(true),
+    getNodeStats(),
+    getNodeStats("spark2"),
+    getNodeStats("spark3"),
     getVllmModels(),
     getVllmMetrics(),
-    getDockerStatus("vllm-head", false),
-    getDockerStatus("vllm-worker", true),
-    getDockerStatus("open-webui", false),
-    getDockerUptime("vllm-head", false),
-    getNetworkRx(NET_IFACE, false),
-    getNetworkRx(NET_IFACE, true),
+    getDockerStatus("vllm-head"),
+    getDockerStatus("vllm-worker", "spark2"),
+    getDockerStatus("vllm-worker", "spark3"),
+    getDockerStatus("open-webui"),
+    getDockerUptime("vllm-head"),
+    getNetworkRx(NET_IFACE),
+    getNetworkRx(NET_IFACE, "spark2"),
   ]);
 
   // Network speed (bytes/sec since last poll) — applies to whichever model is active
@@ -333,6 +337,28 @@ export async function GET() {
             },
           }
         : null,
+      spark3: spark3
+        ? {
+            hostname: spark3.hostname,
+            online: true,
+            cpuPct: spark3.cpu_pct,
+            cpuCores: spark3.cpu_cores,
+            memTotal: spark3.mem_total,
+            memUsed: spark3.mem_total - spark3.mem_available,
+            diskTotal: spark3.disk_total,
+            diskUsed: spark3.disk_used,
+            loadAvg: spark3.load_avg,
+            uptime: spark3.uptime,
+            gpu: {
+              name: spark3.gpu_name,
+              memTotal: spark3.gpu_mem_total,
+              memUsed: spark3.gpu_mem_used,
+              util: spark3.gpu_util,
+              temp: spark3.gpu_temp,
+              powerW: spark3.gpu_power_mw / 1000,
+            },
+          }
+        : null,
     },
     vllm: {
       online: vllmModels !== null,
@@ -341,6 +367,7 @@ export async function GET() {
       containers: {
         head: headStatus,
         worker: workerStatus,
+        worker2: worker2Status,
         webui: webuiStatus,
       },
       headUptimeSec: headUptime,

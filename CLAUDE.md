@@ -2,7 +2,7 @@
 
 ## Identity & Mission
 
-You are the AI agent responsible for this repository and the physical infrastructure it monitors. You operate as a **cluster manager and dashboard developer** for a two-node NVIDIA DGX Spark cluster. Every task you receive comes from the dashboard operator via the AGENT tab in the dashboard UI.
+You are the AI agent responsible for this repository and the physical infrastructure it monitors. You operate as a **cluster manager and dashboard developer** for a three-node NVIDIA DGX Spark cluster. Every task you receive comes from the dashboard operator via the AGENT tab in the dashboard UI.
 
 Your two responsibilities, in priority order:
 1. **Cluster management** — keep vLLM running, models downloaded, services healthy
@@ -12,18 +12,19 @@ Your two responsibilities, in priority order:
 
 ## Cluster Hardware
 
-| Node | Hostname | LAN IP | CX7 IP | Tailscale IP |
+| Node | Hostname | LAN IP | Virtual IP (cluster) | Tailscale IP |
 |---|---|---|---|---|
-| spark1 (master) | edgexpert-74a6 | 10.0.0.223 | 192.168.100.10 | 100.79.103.61 |
-| spark2 (worker) | edgexpert-77fd | 10.0.0.45 | 192.168.100.11 | — |
+| spark1 (master) | edgexpert-74a6 | 10.0.0.223 | 192.168.99.10 | 100.79.103.61 |
+| spark2 (worker) | edgexpert-77fd | 10.0.0.45 | 192.168.99.11 | — |
+| spark3 (worker) | edgexpert-88dd | 10.0.0.95 | 192.168.99.12 | — |
 
-Each node: **NVIDIA DGX Spark** — GB10 Grace Blackwell SoC, 128 GB unified CPU+GPU memory (not separate pools — one physical pool shared by CPU and GPU). Total cluster memory: 256 GB.
+Each node: **NVIDIA DGX Spark** — GB10 Grace Blackwell SoC, 128 GB unified CPU+GPU memory (not separate pools — one physical pool shared by CPU and GPU). Total cluster memory: 384 GB.
 
-CX7 link: 200G QSFP56 DAC cable between `enp1s0f1np1` on each node. Static IPs 192.168.100.10/.11, MTU 9000. This is the NCCL/vLLM data plane.
+CX7 links (full triangle mesh, 2026-05-24): three 200G QSFP56 DAC cables, one between each pair of nodes via `enp1s0f0np0`/`enp1s0f1np1`. Each pair has a direct point-to-point /24 (subnets 100/101/102.0/24). On top of those, each node has a virtual `/32` IP on `192.168.99.0/24` with `/32` static routes through the direct cables — single canonical address per node, all traffic stays on CX7. MTU 9000 throughout. Backups at `/etc/netplan/40-cx7.yaml.bak.pre-vip.20260524_*` on each node.
 
-LAN: `enP7s7` on spark1 at 10.0.0.223 via router 10.0.0.1.
+LAN: `enP7s7` on spark1 at 10.0.0.223 via router 10.0.0.1. spark2 and spark3 via the same router.
 
-**NFS**: spark1 exports `/home/absolome/.cache/huggingface` to spark2 (192.168.100.11). spark2 mounts it at the same path. All HF model downloads happen on spark1 only — spark2 reads weights via NFS during inference.
+**NFS**: spark1 exports `/home/absolome/.cache/huggingface` to the entire `192.168.99.0/24` (covers all three nodes) plus legacy `192.168.100.0/24` and direct `192.168.102.12`. All three nodes mount it at the same path. All HF model downloads happen on spark1 only — spark2 and spark3 read weights via NFS during inference.
 
 ---
 
@@ -34,12 +35,13 @@ LAN: `enP7s7` on spark1 at 10.0.0.223 via router 10.0.0.1.
 | cluster-dash (this app) | spark1 | 3099 | PM2 (id 10) |
 | vllm-head | spark1 | 11434 | Docker |
 | vllm-worker | spark2 | 11434 | Docker (via SSH) |
+| vllm-worker (TP=3) | spark3 | 11434 | Docker (via SSH) — only when running TP=3 |
 | open-webui | spark1 | 3001 | Docker |
 | restic backup | spark1 | 8000 | systemd |
-| sshd | spark1+2 | 22 | systemd |
+| sshd | spark1+2+3 | 22 | systemd |
 | Tailscale | spark1 | 41641 | systemd |
 
-SSH to spark2: `ssh -o BatchMode=yes spark2 'command'` — key-based auth, no password needed.
+SSH: `ssh -o BatchMode=yes spark2 'command'` / `ssh spark3 'command'` — key-based auth, no password needed. SSH trust is full-mesh: any node can reach any other via short hostname.
 
 ---
 
@@ -54,7 +56,7 @@ Directory naming: `models--{org}--{model-name}` → `org/model-name`
 | Qwen/Qwen3-235B-A22B-Instruct-2507-FP8 | READY | 220 GB | 235B MoE, 22B active |
 | Qwen/Qwen3-Coder-Next-FP8 | DOWNLOADING | ~80 GB final | 80B MoE, 3B active, coding |
 | Qwen/Qwen3.5-122B-A10B-FP8 | PARTIAL | ~122 GB final | 122B MoE, 10B active |
-| openai/gpt-oss-120b | NOT YET | ~80 GB (MXFP4) | 117B MoE, 5.1B active |
+| openai/gpt-oss-120b | READY (MXFP4) | ~60 GB | 117B MoE, 5.1B active. Plus ~50 GB partial `original/` BF16 weights — vLLM doesn't need them |
 
 Download tool: `~/.local/bin/hf download {model-id}` — run with `nohup ... &` and log to `~/modelname-download.log`.
 
@@ -98,9 +100,10 @@ Same command with `--node-rank 1`, `VLLM_HOST_IP=192.168.100.11`, `--name vllm-w
 
 | Model | --gpu-memory-utilization | --max-model-len | Notes |
 |---|---|---|---|
-| Qwen3-235B-A22B-FP8 | 0.926 | 5680 | memory-bound |
-| Qwen3-Coder-Next-FP8 | 0.88 | 65536 | 65K ctx |
-| Qwen3.5-122B-A10B-FP8 | 0.91 | 65536 | 65K ctx |
+| Qwen3-235B-A22B-FP8 | 0.926 | 5680 | memory-bound · tool parser qwen3_xml |
+| Qwen3-Coder-Next-FP8 | 0.88 | 65536 | 65K ctx · tool parser qwen3_xml |
+| Qwen3.5-122B-A10B-FP8 | 0.91 | 65536 | 65K ctx · tool parser qwen3_xml |
+| gpt-oss-120b | 0.88 | 32768 | MXFP4 · tool parser `openai` · reasoning parser `openai_gptoss` (harmony format) |
 
 ### Stop cluster
 ```bash

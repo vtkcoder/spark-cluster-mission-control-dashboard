@@ -67,7 +67,7 @@ interface DownloadData {
 
 interface ClusterData {
   ts: number;
-  nodes: { spark1: NodeData | null; spark2: NodeData | null };
+  nodes: { spark1: NodeData | null; spark2: NodeData | null; spark3: NodeData | null };
   vllm: VllmData;
   downloads: DownloadData[];
 }
@@ -78,6 +78,7 @@ const MAX_HISTORY = 60;
 interface History {
   spark1: NodeData[];
   spark2: NodeData[];
+  spark3: NodeData[];
   cacheUsage: number[];
   reqRunning: number[];
 }
@@ -93,6 +94,7 @@ export default function DashPage() {
   const [history, setHistory] = useState<History>({
     spark1: [],
     spark2: [],
+    spark3: [],
     cacheUsage: [],
     reqRunning: [],
   });
@@ -123,6 +125,7 @@ export default function DashPage() {
       setHistory((prev) => ({
         spark1: json.nodes.spark1 ? push(prev.spark1, json.nodes.spark1) : prev.spark1,
         spark2: json.nodes.spark2 ? push(prev.spark2, json.nodes.spark2) : prev.spark2,
+        spark3: json.nodes.spark3 ? push(prev.spark3, json.nodes.spark3) : prev.spark3,
         cacheUsage: push(prev.cacheUsage, json.vllm.metrics?.gpuCacheUsagePct ?? 0),
         reqRunning: push(prev.reqRunning, json.vllm.metrics?.requestsRunning ?? 0),
       }));
@@ -172,16 +175,19 @@ export default function DashPage() {
   }, []);
 
   const nodesOnline =
-    (data?.nodes.spark1?.online ? 1 : 0) + (data?.nodes.spark2?.online ? 1 : 0);
+    (data?.nodes.spark1?.online ? 1 : 0) +
+    (data?.nodes.spark2?.online ? 1 : 0) +
+    (data?.nodes.spark3?.online ? 1 : 0);
 
-  // Single-node mode: we have data and spark2 is missing or offline.
+  // Single-node mode: we have data but spark2 AND spark3 are both missing/offline.
   // In this mode the dashboard treats spark1 as a standalone master:
   // - CLUSTER CONTROL and SYSTEM TASKS tabs are hidden (the latter merges into OVERVIEW).
-  // - KpiBar drops the worker container and reports "x / 1".
+  // - KpiBar drops the worker containers and reports "x / 1".
   // - System-tasks content renders inline below the overview.
-  const singleNodeMode =
-    data !== null && (!data.nodes.spark2 || !data.nodes.spark2.online);
-  const nodesTotal = singleNodeMode ? 1 : 2;
+  const spark2Up = data?.nodes.spark2?.online ?? false;
+  const spark3Up = data?.nodes.spark3?.online ?? false;
+  const singleNodeMode = data !== null && !spark2Up && !spark3Up;
+  const nodesTotal = singleNodeMode ? 1 : (spark2Up ? 1 : 0) + (spark3Up ? 1 : 0) + 1;
 
   // If the active tab disappears when we drop into single-node mode, fall back
   // to OVERVIEW so the user is never staring at a stale/hidden panel.
@@ -255,7 +261,7 @@ export default function DashPage() {
               <div style={{ fontSize: 9, color: "#475569", letterSpacing: "0.1em" }}>
                 {singleNodeMode
                   ? "MISSION CONTROL · 1× NVIDIA GB10 · 121.7 GiB GPU"
-                  : "MISSION CONTROL · 2× NVIDIA GB10 · 243 GiB GPU"}
+                  : `MISSION CONTROL · ${nodesTotal}× NVIDIA GB10 · ${(121.7 * nodesTotal).toFixed(0)} GiB GPU`}
               </div>
             </div>
           </div>
@@ -263,14 +269,14 @@ export default function DashPage() {
           {/* Status pill */}
           {(() => {
             const spark1Up = data?.nodes.spark1?.online ?? false;
-            const healthy = singleNodeMode ? spark1Up : nodesOnline === 2;
+            const healthy = singleNodeMode ? spark1Up : nodesOnline === nodesTotal;
             const label = singleNodeMode
               ? spark1Up
                 ? "STANDALONE"
                 : "OFFLINE"
-              : nodesOnline === 2
+              : nodesOnline === nodesTotal
                 ? "ALL SYSTEMS GO"
-                : nodesOnline === 1
+                : nodesOnline > 0
                   ? "DEGRADED"
                   : "OFFLINE";
             const color = healthy ? "#10b981" : "#ef4444";
@@ -400,8 +406,11 @@ export default function DashPage() {
             workerContainer={data?.vllm.containers.worker ?? "absent"}
             requestsRunning={data?.vllm.metrics?.requestsRunning ?? 0}
             requestsWaiting={data?.vllm.metrics?.requestsWaiting ?? 0}
-            gpuTemp1={data?.nodes.spark1?.gpu.temp ?? null}
-            gpuTemp2={data?.nodes.spark2?.gpu.temp ?? null}
+            gpuTemps={[
+              data?.nodes.spark1?.gpu.temp ?? null,
+              data?.nodes.spark2?.gpu.temp ?? null,
+              data?.nodes.spark3?.gpu.temp ?? null,
+            ]}
             headUptimeSec={data?.vllm.headUptimeSec ?? null}
             singleNode={singleNodeMode}
           />
@@ -431,20 +440,29 @@ export default function DashPage() {
                 <NodeCard
                   label="SPARK1"
                   role="MASTER"
-                  ip="192.168.100.10"
+                  ip="192.168.99.10"
                   data={data?.nodes.spark1 ?? null}
                   history={history.spark1}
                 />
                 {singleNodeMode ? (
                   <SystemTasksPanel data={tasksData} loading={tasksLoading} singleNode />
                 ) : (
-                  <NodeCard
-                    label="SPARK2"
-                    role="WORKER"
-                    ip="192.168.100.11"
-                    data={data?.nodes.spark2 ?? null}
-                    history={history.spark2}
-                  />
+                  <>
+                    <NodeCard
+                      label="SPARK2"
+                      role="WORKER"
+                      ip="192.168.99.11"
+                      data={data?.nodes.spark2 ?? null}
+                      history={history.spark2}
+                    />
+                    <NodeCard
+                      label="SPARK3"
+                      role="WORKER"
+                      ip="192.168.99.12"
+                      data={data?.nodes.spark3 ?? null}
+                      history={history.spark3}
+                    />
+                  </>
                 )}
               </div>
             </section>
@@ -572,7 +590,7 @@ export default function DashPage() {
             SPARK CLUSTER MISSION CONTROL · poll interval 3s
           </div>
           <div style={{ fontSize: 9, color: "#1e293b", letterSpacing: "0.1em" }}>
-            spark1 192.168.100.10 · spark2 192.168.100.11 · vLLM :11434
+            spark1 192.168.99.10 · spark2 192.168.99.11 · spark3 192.168.99.12 · vLLM :11434
           </div>
         </div>
       </div>

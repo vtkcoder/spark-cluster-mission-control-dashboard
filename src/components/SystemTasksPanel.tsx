@@ -38,6 +38,7 @@ interface SystemTasksData {
   ts: number;
   spark1: NodeTasks;
   spark2: NodeTasks;
+  spark3: NodeTasks;
 }
 
 function statColor(stat: string): string {
@@ -329,6 +330,9 @@ function NodeTasksColumn({
         border: "1px solid #1a2540",
         borderRadius: 12,
         overflow: "hidden",
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
       }}
     >
       {/* Node header */}
@@ -423,7 +427,7 @@ function NodeTasksColumn({
       </div>
 
       {/* Content */}
-      <div style={{ padding: "10px 14px", maxHeight: 480, overflowY: "auto" }}>
+      <div style={{ padding: "10px 14px", flex: 1, minHeight: 0, overflowY: "auto" }}>
         {!data.online ? (
           <div style={{ color: "#ef4444", fontSize: 11, padding: "20px 0", textAlign: "center", opacity: 0.5 }}>
             NODE OFFLINE
@@ -443,20 +447,22 @@ function NodeTasksColumn({
 interface SystemTasksPanelProps {
   data: SystemTasksData | null;
   loading: boolean;
+  singleNode?: boolean;
 }
 
-export function SystemTasksPanel({ data, loading }: SystemTasksPanelProps) {
+export function SystemTasksPanel({ data, loading, singleNode = false }: SystemTasksPanelProps) {
   // Only show the empty placeholder on the very first load (no data yet).
   // While refreshing with stale data, keep the existing table visible — no blink.
   if (!data) {
+    const placeholders = singleNode ? ["SPARK1"] : ["SPARK1", "SPARK2", "SPARK3"];
     return (
-      <div style={{ display: "flex", gap: 14 }}>
-        {["SPARK1", "SPARK2"].map((n) => (
+      <div style={{ display: "flex", gap: 14, height: "100%", minHeight: singleNode ? 0 : 400 }}>
+        {placeholders.map((n) => (
           <div
             key={n}
             style={{
               flex: 1,
-              height: 400,
+              minHeight: singleNode ? 0 : 400,
               background: "#0c1220",
               border: "1px solid #1a2540",
               borderRadius: 12,
@@ -476,7 +482,7 @@ export function SystemTasksPanel({ data, loading }: SystemTasksPanelProps) {
   }
 
   return (
-    <div style={{ display: "flex", gap: 14, position: "relative" }}>
+    <div style={{ display: "flex", gap: 14, position: "relative", height: "100%" }}>
       {/* Subtle refresh pulse in corner — visible only while polling, no layout shift */}
       {loading && (
         <div
@@ -497,15 +503,25 @@ export function SystemTasksPanel({ data, loading }: SystemTasksPanelProps) {
       <NodeTasksColumn
         label="SPARK1"
         role="MASTER"
-        ip="192.168.100.10"
+        ip="192.168.99.10"
         data={data.spark1}
       />
-      <NodeTasksColumn
-        label="SPARK2"
-        role="WORKER"
-        ip="192.168.100.11"
-        data={data.spark2}
-      />
+      {!singleNode && (
+        <>
+          <NodeTasksColumn
+            label="SPARK2"
+            role="WORKER"
+            ip="192.168.99.11"
+            data={data.spark2}
+          />
+          <NodeTasksColumn
+            label="SPARK3"
+            role="WORKER"
+            ip="192.168.99.12"
+            data={data.spark3}
+          />
+        </>
+      )}
     </div>
   );
 }

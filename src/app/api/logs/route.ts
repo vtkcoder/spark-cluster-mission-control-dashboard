@@ -9,10 +9,11 @@ function stripAnsi(s: string): string {
   return s.replace(/\x1B\[[0-9;]*[mGKHFJ]/g, "");
 }
 
-const SOURCES: Record<string, { type: "docker-local" | "docker-remote" | "pm2"; target: string }> = {
-  "vllm-head":   { type: "docker-local",  target: "vllm-head"  },
-  "vllm-worker": { type: "docker-remote", target: "vllm-worker" },
-  "open-webui":  { type: "docker-local",  target: "open-webui" },
+const SOURCES: Record<string, { type: "docker-local" | "docker-ssh" | "pm2"; target: string; host?: string }> = {
+  "vllm-head":    { type: "docker-local", target: "vllm-head" },
+  "vllm-worker":  { type: "docker-ssh",   target: "vllm-worker", host: "spark2" },
+  "vllm-worker2": { type: "docker-ssh",   target: "vllm-worker", host: "spark3" },
+  "open-webui":   { type: "docker-local", target: "open-webui" },
 };
 
 export async function GET(req: NextRequest) {
@@ -40,7 +41,7 @@ export async function GET(req: NextRequest) {
         raw = stdout + stderr;
       } else {
         const { stdout, stderr } = await execAsync(
-          `ssh -o ConnectTimeout=5 -o BatchMode=yes spark2 "docker logs ${src.target} --tail ${lines} 2>&1"`,
+          `ssh -o ConnectTimeout=5 -o BatchMode=yes ${src.host} "docker logs ${src.target} --tail ${lines} 2>&1"`,
           { timeout: 12000 }
         );
         raw = stdout + stderr;

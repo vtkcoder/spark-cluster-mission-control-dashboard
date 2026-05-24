@@ -96,10 +96,10 @@ if (!existsSync(TASKS_SCRIPT)) {
   writeFileSync(TASKS_SCRIPT, TASKS_SRC, { mode: 0o644 });
 }
 
-async function getNodeTasks(remote: boolean) {
+async function getNodeTasks(host?: string) {
   try {
-    const cmd = remote
-      ? `ssh -o ConnectTimeout=3 -o BatchMode=yes spark2 python3 /dev/stdin < ${TASKS_SCRIPT}`
+    const cmd = host
+      ? `ssh -o ConnectTimeout=3 -o BatchMode=yes ${host} python3 /dev/stdin < ${TASKS_SCRIPT}`
       : `python3 ${TASKS_SCRIPT}`;
     const { stdout } = await execAsync(cmd, { timeout: 8000 });
     return { online: true, ...JSON.parse(stdout.trim()) };
@@ -109,9 +109,10 @@ async function getNodeTasks(remote: boolean) {
 }
 
 export async function GET() {
-  const [spark1, spark2] = await Promise.all([
-    getNodeTasks(false),
-    getNodeTasks(true),
+  const [spark1, spark2, spark3] = await Promise.all([
+    getNodeTasks(),
+    getNodeTasks("spark2"),
+    getNodeTasks("spark3"),
   ]);
-  return NextResponse.json({ ts: Date.now(), spark1, spark2 });
+  return NextResponse.json({ ts: Date.now(), spark1, spark2, spark3 });
 }
