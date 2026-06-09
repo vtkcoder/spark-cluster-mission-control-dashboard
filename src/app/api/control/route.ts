@@ -1,6 +1,6 @@
 import { exec } from "child_process";
 import { promisify } from "util";
-import { readdirSync, existsSync } from "fs";
+import { readdirSync, existsSync, statSync } from "fs";
 import { join } from "path";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -21,6 +21,8 @@ interface ModelDefaults {
   maxGpuUtil: number;        // per-model hard ceiling for the GPU util slider
   maxContextSlider: number;
   note: string;
+  toolCallParser: string;    // vLLM --tool-call-parser
+  reasoningParser?: string;  // vLLM --reasoning-parser (optional, for thinking/CoT models)
 }
 
 const KNOWN_MODELS: Record<string, ModelDefaults> = {
@@ -32,6 +34,7 @@ const KNOWN_MODELS: Record<string, ModelDefaults> = {
     maxGpuUtil: 0.926,
     maxContextSlider: 7168,
     note: "5,680 ctx — GPU memory bound",
+    toolCallParser: "qwen3_xml",
   },
   "Qwen/Qwen3-Coder-Next-FP8": {
     displayName: "Qwen3-Coder-Next",
@@ -41,6 +44,7 @@ const KNOWN_MODELS: Record<string, ModelDefaults> = {
     maxGpuUtil: 0.926,
     maxContextSlider: 65536,
     note: "65K ctx · 80B MoE coding model",
+    toolCallParser: "qwen3_xml",
   },
   "Qwen/Qwen3.5-122B-A10B-FP8": {
     displayName: "Qwen3.5-122B-A10B",
@@ -50,15 +54,18 @@ const KNOWN_MODELS: Record<string, ModelDefaults> = {
     maxGpuUtil: 0.926,
     maxContextSlider: 65536,
     note: "65K context",
+    toolCallParser: "qwen3_xml",
   },
   "openai/gpt-oss-120b": {
     displayName: "GPT-OSS-120B",
-    expectedGb: 80,
+    expectedGb: 60, // MXFP4 shards only — original/ BF16 weights are not needed for vLLM
     defaultMaxLen: 32768,
     defaultGpuUtil: 0.88,
     maxGpuUtil: 0.926,
     maxContextSlider: 131072,
-    note: "120B MoE · 5.1B active · 256K ctx",
+    note: "117B MoE · 5.1B active · MXFP4 · harmony tools",
+    toolCallParser: "openai",
+    reasoningParser: "openai_gptoss",
   },
 };
 
@@ -91,7 +98,12 @@ function getModels() {
     const known = KNOWN_MODELS[id];
 
     const blobs = existsSync(blobsDir) ? readdirSync(blobsDir) : [];
-    const incompleteCount = blobs.filter((f) => f.endsWith(".incomplete")).length;
+    // A 0-byte .incomplete is orphaned download state (request died before bytes written).
+    // Only count nonzero .incomplete files as a real in-flight download.
+    const incompleteCount = blobs.filter((f) => {
+      if (!f.endsWith(".incomplete")) return false;
+      try { return statSync(join(blobsDir, f)).size > 0; } catch { return false; }
+    }).length;
     const completeCount = blobs.filter((f) => !f.endsWith(".incomplete")).length;
 
     const currentGb = dirBytes(dir) / 1073741824;
@@ -129,7 +141,20 @@ function getModels() {
 }
 
 // ── vLLM command builders ─────────────────────────────────────────────────────
-function buildHeadCmd(model: string, maxLen: number, gpuUtil: number): string {
+function buildVllmServeArgs(model: string, maxLen: number, gpuUtil: number, cfg: ModelDefaults): string[] {
+  const parserArgs = [`--enable-auto-tool-choice --tool-call-parser ${cfg.toolCallParser}`];
+  if (cfg.reasoningParser) parserArgs.push(`--reasoning-parser ${cfg.reasoningParser}`);
+  return [
+    `vllm serve ${model}`,
+    "--tensor-parallel-size 2",
+    `--gpu-memory-utilization ${gpuUtil}`,
+    `--max-model-len ${maxLen} --kv-cache-dtype fp8 --enforce-eager`,
+    ...parserArgs,
+    "--host 0.0.0.0 --port 11434",
+  ];
+}
+
+function buildHeadCmd(model: string, maxLen: number, gpuUtil: number, cfg: ModelDefaults): string {
   return [
     "docker run -d --network host --gpus all --shm-size 10g",
     "-v /home/absolome/.cache/huggingface:/root/.cache/huggingface",
@@ -139,17 +164,13 @@ function buildHeadCmd(model: string, maxLen: number, gpuUtil: number): string {
     "-e GLOO_SOCKET_IFNAME=enp1s0f1np1 -e VLLM_HOST_IP=192.168.100.10",
     "-e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1",
     `--name vllm-head ${VLLM_IMAGE}`,
-    `vllm serve ${model}`,
-    "--nnodes 2 --node-rank 0 --master-addr 192.168.100.10 --master-port 29501",
-    "--tensor-parallel-size 2",
-    `--gpu-memory-utilization ${gpuUtil}`,
-    `--max-model-len ${maxLen} --kv-cache-dtype fp8 --enforce-eager`,
-    "--enable-auto-tool-choice --tool-call-parser qwen3_xml",
-    "--host 0.0.0.0 --port 11434",
+    ...buildVllmServeArgs(model, maxLen, gpuUtil, cfg).map((arg, i) =>
+      i === 0 ? `${arg} --nnodes 2 --node-rank 0 --master-addr 192.168.100.10 --master-port 29501` : arg
+    ),
   ].join(" \\\n  ");
 }
 
-function buildWorkerCmd(model: string, maxLen: number, gpuUtil: number): string {
+function buildWorkerCmd(model: string, maxLen: number, gpuUtil: number, cfg: ModelDefaults): string {
   return [
     "docker run -d --network host --gpus all --shm-size 10g",
     "-v /home/absolome/.cache/huggingface:/root/.cache/huggingface",
@@ -159,13 +180,9 @@ function buildWorkerCmd(model: string, maxLen: number, gpuUtil: number): string 
     "-e GLOO_SOCKET_IFNAME=enp1s0f1np1 -e VLLM_HOST_IP=192.168.100.11",
     "-e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1",
     `--name vllm-worker ${VLLM_IMAGE}`,
-    `vllm serve ${model}`,
-    "--nnodes 2 --node-rank 1 --master-addr 192.168.100.10 --master-port 29501",
-    "--tensor-parallel-size 2",
-    `--gpu-memory-utilization ${gpuUtil}`,
-    `--max-model-len ${maxLen} --kv-cache-dtype fp8 --enforce-eager`,
-    "--enable-auto-tool-choice --tool-call-parser qwen3_xml",
-    "--host 0.0.0.0 --port 11434",
+    ...buildVllmServeArgs(model, maxLen, gpuUtil, cfg).map((arg, i) =>
+      i === 0 ? `${arg} --nnodes 2 --node-rank 1 --master-addr 192.168.100.10 --master-port 29501` : arg
+    ),
   ].join(" \\\n  ");
 }
 
@@ -212,13 +229,25 @@ export async function POST(req: NextRequest) {
       const maxLen = body.maxModelLen ?? cfg.defaultMaxLen;
       const gpuUtil = body.gpuUtil ?? cfg.defaultGpuUtil;
 
+      // Per-model launch defaults — fall back to qwen3_xml for unknown models
+      const modelCfg: ModelDefaults = KNOWN_MODELS[model] ?? {
+        displayName: cfg.displayName,
+        expectedGb: cfg.expectedGb,
+        defaultMaxLen: cfg.defaultMaxLen,
+        defaultGpuUtil: cfg.defaultGpuUtil,
+        maxGpuUtil: cfg.maxGpuUtil,
+        maxContextSlider: cfg.maxContextSlider,
+        note: cfg.note,
+        toolCallParser: "qwen3_xml",
+      };
+
       await Promise.allSettled([
         execAsync("docker rm -f vllm-head 2>/dev/null; true", { timeout: 15000 }),
         execAsync("ssh -o ConnectTimeout=5 -o BatchMode=yes spark2 'docker rm -f vllm-worker 2>/dev/null; true'", { timeout: 15000 }),
       ]);
 
-      const headCmd = buildHeadCmd(model, maxLen, gpuUtil);
-      const workerCmd = buildWorkerCmd(model, maxLen, gpuUtil);
+      const headCmd = buildHeadCmd(model, maxLen, gpuUtil, modelCfg);
+      const workerCmd = buildWorkerCmd(model, maxLen, gpuUtil, modelCfg);
 
       const [headResult, workerResult] = await Promise.allSettled([
         execAsync(headCmd, { timeout: 30000 }),

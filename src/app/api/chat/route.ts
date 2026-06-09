@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { detectEngine } from "@/lib/engine";
 
 export const dynamic = "force-dynamic";
 
@@ -24,7 +25,9 @@ export async function POST(req: NextRequest) {
       ...(body.extra_body ?? {}),
     };
 
-    const upstream = await fetch("http://localhost:11434/v1/chat/completions", {
+    const engine = await detectEngine();
+    const port = engine.port || 11434;
+    const upstream = await fetch(`http://localhost:${port}/v1/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),

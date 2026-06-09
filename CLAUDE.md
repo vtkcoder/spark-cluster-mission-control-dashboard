@@ -2,7 +2,7 @@
 
 ## Identity & Mission
 
-You are the AI agent responsible for this repository and the physical infrastructure it monitors. You operate as a **cluster manager and dashboard developer** for a three-node NVIDIA DGX Spark cluster. Every task you receive comes from the dashboard operator via the AGENT tab in the dashboard UI.
+You are the AI agent responsible for this repository and the physical infrastructure it monitors. You operate as a **cluster manager and dashboard developer** for a four-node NVIDIA DGX Spark cluster. Every task you receive comes from the dashboard operator via the AGENT tab in the dashboard UI.
 
 Your two responsibilities, in priority order:
 1. **Cluster management** — keep vLLM running, models downloaded, services healthy
@@ -17,14 +17,15 @@ Your two responsibilities, in priority order:
 | spark1 (master) | edgexpert-74a6 | 10.0.0.223 | 192.168.99.10 | 100.79.103.61 |
 | spark2 (worker) | edgexpert-77fd | 10.0.0.45 | 192.168.99.11 | — |
 | spark3 (worker) | edgexpert-88dd | 10.0.0.95 | 192.168.99.12 | — |
+| spark4 (worker) | edgexpert-7833 | 10.0.0.66 | 192.168.99.13 | — |
 
-Each node: **NVIDIA DGX Spark** — GB10 Grace Blackwell SoC, 128 GB unified CPU+GPU memory (not separate pools — one physical pool shared by CPU and GPU). Total cluster memory: 384 GB.
+Each node: **NVIDIA DGX Spark** — GB10 Grace Blackwell SoC, 128 GB unified CPU+GPU memory (not separate pools — one physical pool shared by CPU and GPU). Total cluster memory: 512 GB.
 
-CX7 links (full triangle mesh, 2026-05-24): three 200G QSFP56 DAC cables, one between each pair of nodes via `enp1s0f0np0`/`enp1s0f1np1`. Each pair has a direct point-to-point /24 (subnets 100/101/102.0/24). On top of those, each node has a virtual `/32` IP on `192.168.99.0/24` with `/32` static routes through the direct cables — single canonical address per node, all traffic stays on CX7. MTU 9000 throughout. Backups at `/etc/netplan/40-cx7.yaml.bak.pre-vip.20260524_*` on each node.
+CX7 links (4-node **RING**, re-cabled 2026-06-06 — NOT a full mesh; 2 ports/node can't mesh 4 nodes): `spark1 –A:100– spark2 –B:101– spark3 –C:103– spark4 –D:102– spark1`, each a 200G QSFP56 DAC point-to-point /24 via `enp1s0f0np0`/`enp1s0f1np1`. Each node has a virtual `/32` on `192.168.99.0/24`; the two non-adjacent ("diagonal") node pairs are reached via IP-forwarding + transit routes on the in-between node. MTU 9000 throughout. **Bring-up after any reboot: `~/research/cluster-4node-preflight.sh`** (sets IPs/routes/forwarding + mounts NFS + restores patches — none of that persists a reboot). Full detail: `~/server-board.md` 2026-06-06 + `~/research/3-spark-cluster-runbook.md` banner.
 
-LAN: `enP7s7` on spark1 at 10.0.0.223 via router 10.0.0.1. spark2 and spark3 via the same router.
+LAN: `enP7s7` on spark1 at 10.0.0.223 via router 10.0.0.1. spark2/3/4 via the same router.
 
-**NFS**: spark1 exports `/home/absolome/.cache/huggingface` to the entire `192.168.99.0/24` (covers all three nodes) plus legacy `192.168.100.0/24` and direct `192.168.102.12`. All three nodes mount it at the same path. All HF model downloads happen on spark1 only — spark2 and spark3 read weights via NFS during inference.
+**NFS**: spark1 exports `/home/absolome/.cache/huggingface` to `192.168.99.0/24` plus the CX7 link subnets `192.168.100/101/102/103.0/24`. All four nodes mount it at the same path. All HF model downloads happen on spark1 only — spark2/3/4 read weights via NFS during inference. NOTE: the `_netdev` fstab mount fails at boot (CX7 routes don't exist yet) — the pre-flight script re-mounts it; if a worker shows OFFLINE or "model not found", check the mount first.
 
 ---
 
@@ -34,11 +35,12 @@ LAN: `enP7s7` on spark1 at 10.0.0.223 via router 10.0.0.1. spark2 and spark3 via
 |---|---|---|---|
 | cluster-dash (this app) | spark1 | 3099 | PM2 (id 10) |
 | vllm-head | spark1 | 11434 | Docker |
-| vllm-worker | spark2 | 11434 | Docker (via SSH) |
-| vllm-worker (TP=3) | spark3 | 11434 | Docker (via SSH) — only when running TP=3 |
+| vllm-worker | spark2 | 11434 | Docker (via SSH) — PP=4 rank 1 |
+| vllm-worker | spark3 | 11434 | Docker (via SSH) — PP=4 rank 2 |
+| vllm-worker | spark4 | 11434 | Docker (via SSH) — PP=4 rank 3 |
 | open-webui | spark1 | 3001 | Docker |
 | restic backup | spark1 | 8000 | systemd |
-| sshd | spark1+2+3 | 22 | systemd |
+| sshd | spark1+2+3+4 | 22 | systemd |
 | Tailscale | spark1 | 41641 | systemd |
 
 SSH: `ssh -o BatchMode=yes spark2 'command'` / `ssh spark3 'command'` — key-based auth, no password needed. SSH trust is full-mesh: any node can reach any other via short hostname.

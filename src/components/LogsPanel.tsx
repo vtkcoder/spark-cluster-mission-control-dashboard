@@ -10,9 +10,13 @@ interface LogData {
 }
 
 const SOURCES = [
-  { id: "vllm-head",   label: "vLLM Head",   icon: "▸" },
-  { id: "vllm-worker", label: "vLLM Worker",  icon: "▸" },
-  { id: "open-webui",  label: "Open WebUI",   icon: "▸" },
+  { id: "vllm-head",    label: "vLLM Head",     icon: "▸" },
+  { id: "vllm-worker",  label: "vLLM Worker",   icon: "▸" },
+  { id: "sglang-head",  label: "SGLang rank0",  icon: "◆" },
+  { id: "sglang-rank1", label: "SGLang rank1",  icon: "◆" },
+  { id: "sglang-rank2", label: "SGLang rank2",  icon: "◆" },
+  { id: "sglang-rank3", label: "SGLang rank3",  icon: "◆" },
+  { id: "open-webui",   label: "Open WebUI",    icon: "▸" },
   { id: "pm2-cluster-dash", label: "cluster-dash", icon: "⬡" },
 ];
 

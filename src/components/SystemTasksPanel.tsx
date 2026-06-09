@@ -39,6 +39,7 @@ interface SystemTasksData {
   spark1: NodeTasks;
   spark2: NodeTasks;
   spark3: NodeTasks;
+  spark4: NodeTasks;
 }
 
 function statColor(stat: string): string {
@@ -454,7 +455,7 @@ export function SystemTasksPanel({ data, loading, singleNode = false }: SystemTa
   // Only show the empty placeholder on the very first load (no data yet).
   // While refreshing with stale data, keep the existing table visible — no blink.
   if (!data) {
-    const placeholders = singleNode ? ["SPARK1"] : ["SPARK1", "SPARK2", "SPARK3"];
+    const placeholders = singleNode ? ["SPARK1"] : ["SPARK1", "SPARK2", "SPARK3", "SPARK4"];
     return (
       <div style={{ display: "flex", gap: 14, height: "100%", minHeight: singleNode ? 0 : 400 }}>
         {placeholders.map((n) => (
@@ -519,6 +520,12 @@ export function SystemTasksPanel({ data, loading, singleNode = false }: SystemTa
             role="WORKER"
             ip="192.168.99.12"
             data={data.spark3}
+          />
+          <NodeTasksColumn
+            label="SPARK4"
+            role="WORKER"
+            ip="192.168.99.13"
+            data={data.spark4}
           />
         </>
       )}

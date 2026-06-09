@@ -13,6 +13,11 @@ const SOURCES: Record<string, { type: "docker-local" | "docker-ssh" | "pm2"; tar
   "vllm-head":    { type: "docker-local", target: "vllm-head" },
   "vllm-worker":  { type: "docker-ssh",   target: "vllm-worker", host: "spark2" },
   "vllm-worker2": { type: "docker-ssh",   target: "vllm-worker", host: "spark3" },
+  "vllm-worker3": { type: "docker-ssh",   target: "vllm-worker", host: "spark4" },
+  "sglang-head":  { type: "docker-local", target: "sglang" },
+  "sglang-rank1": { type: "docker-ssh",   target: "sglang", host: "spark2" },
+  "sglang-rank2": { type: "docker-ssh",   target: "sglang", host: "spark3" },
+  "sglang-rank3": { type: "docker-ssh",   target: "sglang", host: "spark4" },
   "open-webui":   { type: "docker-local", target: "open-webui" },
 };
 

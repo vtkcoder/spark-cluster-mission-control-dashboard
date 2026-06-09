@@ -51,10 +51,25 @@ interface VllmData {
   online: boolean;
   model: string | null;
   maxModelLen: number | null;
-  containers: { head: string; worker: string; webui: string };
+  throughputTokS?: number | null;
+  containers: { head: string; worker: string; worker2?: string; worker3?: string; webui: string };
   headUptimeSec: number | null;
   metrics: VllmMetrics | null;
 }
+
+interface EngineData {
+  type: "vllm" | "sglang" | "none";
+  label: string;
+  port: number;
+  topology: string;
+  parallel: string;
+  kvDtype: string;
+  containers: { key: string; label: string }[];
+}
+
+const EMPTY_ENGINE: EngineData = {
+  type: "none", label: "—", port: 0, topology: "—", parallel: "—", kvDtype: "—", containers: [],
+};
 
 interface DownloadData {
   model: string;
@@ -67,7 +82,8 @@ interface DownloadData {
 
 interface ClusterData {
   ts: number;
-  nodes: { spark1: NodeData | null; spark2: NodeData | null; spark3: NodeData | null };
+  nodes: { spark1: NodeData | null; spark2: NodeData | null; spark3: NodeData | null; spark4: NodeData | null };
+  engine: EngineData;
   vllm: VllmData;
   downloads: DownloadData[];
 }
@@ -79,6 +95,7 @@ interface History {
   spark1: NodeData[];
   spark2: NodeData[];
   spark3: NodeData[];
+  spark4: NodeData[];
   cacheUsage: number[];
   reqRunning: number[];
 }
@@ -95,6 +112,7 @@ export default function DashPage() {
     spark1: [],
     spark2: [],
     spark3: [],
+    spark4: [],
     cacheUsage: [],
     reqRunning: [],
   });
@@ -126,6 +144,7 @@ export default function DashPage() {
         spark1: json.nodes.spark1 ? push(prev.spark1, json.nodes.spark1) : prev.spark1,
         spark2: json.nodes.spark2 ? push(prev.spark2, json.nodes.spark2) : prev.spark2,
         spark3: json.nodes.spark3 ? push(prev.spark3, json.nodes.spark3) : prev.spark3,
+        spark4: json.nodes.spark4 ? push(prev.spark4, json.nodes.spark4) : prev.spark4,
         cacheUsage: push(prev.cacheUsage, json.vllm.metrics?.gpuCacheUsagePct ?? 0),
         reqRunning: push(prev.reqRunning, json.vllm.metrics?.requestsRunning ?? 0),
       }));
@@ -177,17 +196,19 @@ export default function DashPage() {
   const nodesOnline =
     (data?.nodes.spark1?.online ? 1 : 0) +
     (data?.nodes.spark2?.online ? 1 : 0) +
-    (data?.nodes.spark3?.online ? 1 : 0);
+    (data?.nodes.spark3?.online ? 1 : 0) +
+    (data?.nodes.spark4?.online ? 1 : 0);
 
-  // Single-node mode: we have data but spark2 AND spark3 are both missing/offline.
+  // Single-node mode: we have data but spark2, spark3 AND spark4 are all missing/offline.
   // In this mode the dashboard treats spark1 as a standalone master:
   // - CLUSTER CONTROL and SYSTEM TASKS tabs are hidden (the latter merges into OVERVIEW).
   // - KpiBar drops the worker containers and reports "x / 1".
   // - System-tasks content renders inline below the overview.
   const spark2Up = data?.nodes.spark2?.online ?? false;
   const spark3Up = data?.nodes.spark3?.online ?? false;
-  const singleNodeMode = data !== null && !spark2Up && !spark3Up;
-  const nodesTotal = singleNodeMode ? 1 : (spark2Up ? 1 : 0) + (spark3Up ? 1 : 0) + 1;
+  const spark4Up = data?.nodes.spark4?.online ?? false;
+  const singleNodeMode = data !== null && !spark2Up && !spark3Up && !spark4Up;
+  const nodesTotal = singleNodeMode ? 1 : (spark2Up ? 1 : 0) + (spark3Up ? 1 : 0) + (spark4Up ? 1 : 0) + 1;
 
   // If the active tab disappears when we drop into single-node mode, fall back
   // to OVERVIEW so the user is never staring at a stale/hidden panel.
@@ -410,6 +431,7 @@ export default function DashPage() {
               data?.nodes.spark1?.gpu.temp ?? null,
               data?.nodes.spark2?.gpu.temp ?? null,
               data?.nodes.spark3?.gpu.temp ?? null,
+              data?.nodes.spark4?.gpu.temp ?? null,
             ]}
             headUptimeSec={data?.vllm.headUptimeSec ?? null}
             singleNode={singleNodeMode}
@@ -462,6 +484,13 @@ export default function DashPage() {
                       data={data?.nodes.spark3 ?? null}
                       history={history.spark3}
                     />
+                    <NodeCard
+                      label="SPARK4"
+                      role="WORKER"
+                      ip="192.168.99.13"
+                      data={data?.nodes.spark4 ?? null}
+                      history={history.spark4}
+                    />
                   </>
                 )}
               </div>
@@ -477,10 +506,11 @@ export default function DashPage() {
                   online: false,
                   model: null,
                   maxModelLen: null,
-                  containers: { head: "absent", worker: "absent" },
+                  containers: { head: "absent", worker: "absent", webui: "absent" },
                   headUptimeSec: null,
                   metrics: null,
                 }}
+                engine={data?.engine ?? EMPTY_ENGINE}
                 cacheHistory={history.cacheUsage}
                 reqHistory={history.reqRunning}
               />
@@ -513,8 +543,13 @@ export default function DashPage() {
         {activeTab === "control" && (
           <section>
             <div style={{ fontSize: 9, color: "#334155", letterSpacing: "0.14em", marginBottom: 8, textTransform: "uppercase" }}>
-              ▸ CLUSTER CONTROL
+              ▸ CLUSTER CONTROL{data?.engine?.label && data.engine.type !== "none" ? ` · ACTIVE: ${data.engine.label} ${data.engine.parallel}` : ""}
             </div>
+            {data?.engine?.type === "sglang" && (
+              <div style={{ marginBottom: 12, padding: "10px 14px", borderRadius: 8, background: "#22d3ee10", border: "1px solid #22d3ee44", fontSize: 11, color: "#94a3b8", lineHeight: 1.5 }}>
+                <span style={{ color: "#22d3ee", fontWeight: 700 }}>SGLang cluster is the active engine</span> (TP=4, port 30000, served by the <code style={{ color: "#e2e8f0" }}>sglang</code> container on all 4 nodes). It is launched/stopped externally via <code style={{ color: "#e2e8f0" }}>~/research/run-sglang-qwen397.sh</code>, not from this panel. The vLLM controls below remain available to switch the cluster over to vLLM.
+              </div>
+            )}
             <ControlPanel
               containers={data?.vllm.containers ?? { head: "absent", worker: "absent", webui: "absent" }}
               vllmMaxModelLen={data?.vllm.maxModelLen ?? null}
@@ -590,7 +625,10 @@ export default function DashPage() {
             SPARK CLUSTER MISSION CONTROL · poll interval 3s
           </div>
           <div style={{ fontSize: 9, color: "#1e293b", letterSpacing: "0.1em" }}>
-            spark1 192.168.99.10 · spark2 192.168.99.11 · spark3 192.168.99.12 · vLLM :11434
+            spark1 192.168.99.10 · spark2 192.168.99.11 · spark3 192.168.99.12 · spark4 192.168.99.13 ·{" "}
+            {data?.engine && data.engine.type !== "none"
+              ? `${data.engine.label} :${data.engine.port}`
+              : "engine offline"}
           </div>
         </div>
       </div>

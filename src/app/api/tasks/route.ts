@@ -109,10 +109,11 @@ async function getNodeTasks(host?: string) {
 }
 
 export async function GET() {
-  const [spark1, spark2, spark3] = await Promise.all([
+  const [spark1, spark2, spark3, spark4] = await Promise.all([
     getNodeTasks(),
     getNodeTasks("spark2"),
     getNodeTasks("spark3"),
+    getNodeTasks("spark4"),
   ]);
-  return NextResponse.json({ ts: Date.now(), spark1, spark2, spark3 });
+  return NextResponse.json({ ts: Date.now(), spark1, spark2, spark3, spark4 });
 }

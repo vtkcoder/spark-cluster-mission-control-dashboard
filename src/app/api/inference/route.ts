@@ -1,13 +1,15 @@
 import { NextResponse } from "next/server";
+import { detectEngine, getEngineModels, getSglangThroughput } from "@/lib/engine";
 
 export const dynamic = "force-dynamic";
 
 // Module-level state for delta throughput computation
 let prev: { ts: number; promptTokens: number; genTokens: number } | null = null;
 
-async function fetchMetrics(): Promise<Record<string, number> | null> {
+async function fetchMetrics(port: number, prefix: string): Promise<Record<string, number> | null> {
+  if (!port) return null;
   try {
-    const res = await fetch("http://localhost:11434/metrics", {
+    const res = await fetch(`http://localhost:${port}/metrics`, {
       signal: AbortSignal.timeout(2000),
     });
     if (!res.ok) return null;
@@ -17,31 +19,13 @@ async function fetchMetrics(): Promise<Record<string, number> | null> {
       if (line.startsWith("#") || !line.trim()) continue;
       const m = line.match(/^([a-zA-Z_:][a-zA-Z0-9_:]*)\{?[^}]*\}?\s+([\d.eE+\-]+)/);
       if (!m) continue;
-      const key = m[1].replace(/^vllm:/, "");
+      const key = (prefix ? m[1].replace(new RegExp(`^${prefix}`), "") : m[1]).replace(/^(vllm|sglang):/, "");
       const val = parseFloat(m[2]);
       if (!isNaN(val) && isFinite(val)) {
-        // Sum across label variants (correct for _total counters; also correct for
-        // _sum/_count aggregates where we want the overall average, not per-label).
         totals[key] = (totals[key] ?? 0) + val;
       }
     }
     return Object.keys(totals).length ? totals : null;
-  } catch {
-    return null;
-  }
-}
-
-async function fetchModel(): Promise<string | null> {
-  try {
-    const res = await fetch("http://localhost:11434/v1/models", {
-      signal: AbortSignal.timeout(2000),
-    });
-    if (!res.ok) return null;
-    const data = await res.json() as { data: Array<{ id: string }> };
-    if (!data.data?.length) return null;
-    const raw = data.data[0].id;
-    const snap = raw.match(/models--([^/]+)--([^/]+)\/snapshots/);
-    return snap ? `${snap[1]}/${snap[2]}` : raw;
   } catch {
     return null;
   }
@@ -54,16 +38,26 @@ function avgMs(sum: number, count: number): number | null {
 
 export async function GET() {
   const now = Date.now();
-  const [metrics, model] = await Promise.all([fetchMetrics(), fetchModel()]);
+  const engine = await detectEngine();
+  const [metrics, modelInfo, sgTokS] = await Promise.all([
+    fetchMetrics(engine.port, engine.metricsPrefix),
+    getEngineModels(engine.port),
+    engine.type === "sglang" ? getSglangThroughput() : Promise.resolve(null),
+  ]);
+  const model = modelInfo?.model ?? null;
   const online = model !== null;
 
+  // No Prometheus metrics (SGLang default has --enable-metrics off). Still
+  // report online/model + the log-scraped decode tok/s so the tab is useful.
   if (!metrics) {
     prev = null;
     return NextResponse.json({
       ts: now, online, model,
+      engine: engine.type, engineLabel: engine.label, port: engine.port,
+      metricsAvailable: false,
       requestsRunning: 0, requestsWaiting: 0, requestsSwapped: 0,
       promptTokensTotal: 0, generationTokensTotal: 0,
-      promptThroughput: 0, genThroughput: 0,
+      promptThroughput: 0, genThroughput: sgTokS ?? 0,
       avgE2eLatencyMs: null, avgTtftMs: null, avgTpotMs: null,
       avgPrefillMs: null, avgQueueMs: null,
       successTotal: 0, failureTotal: 0, preemptionsTotal: 0,
@@ -97,8 +91,10 @@ export async function GET() {
     ts: now,
     online,
     model,
-    requestsRunning: metrics["num_requests_running"] ?? 0,
-    requestsWaiting: metrics["num_requests_waiting"] ?? 0,
+    engine: engine.type, engineLabel: engine.label, port: engine.port,
+    metricsAvailable: true,
+    requestsRunning: metrics["num_requests_running"] ?? metrics["num_running_reqs"] ?? 0,
+    requestsWaiting: metrics["num_requests_waiting"] ?? metrics["num_waiting_reqs"] ?? 0,
     requestsSwapped: metrics["num_requests_swapped"] ?? 0,
     promptTokensTotal: promptTokens,
     generationTokensTotal: genTokens,

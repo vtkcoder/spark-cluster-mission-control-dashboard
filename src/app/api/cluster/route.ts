@@ -2,6 +2,7 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import { writeFileSync, existsSync } from "fs";
 import { NextResponse } from "next/server";
+import { detectEngine, getEngineModels, getEngineMetrics, getSglangThroughput } from "@/lib/engine";
 
 export const dynamic = "force-dynamic";
 
@@ -76,11 +77,6 @@ interface NodeRaw {
   gpu_power_mw: number;
 }
 
-interface VllmModel {
-  id: string;
-  max_model_len?: number;
-}
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
 async function getNodeStats(host?: string): Promise<NodeRaw | null> {
   try {
@@ -113,49 +109,6 @@ async function getDockerUptime(container: string, host?: string): Promise<number
     const started = stdout.trim();
     if (!started) return null;
     return (Date.now() - new Date(started).getTime()) / 1000;
-  } catch {
-    return null;
-  }
-}
-
-async function getVllmModels(): Promise<{ model: string; maxModelLen: number | null } | null> {
-  try {
-    const res = await fetch("http://localhost:11434/v1/models", {
-      signal: AbortSignal.timeout(2000),
-    });
-    if (!res.ok) return null;
-    const data = await res.json() as { data: VllmModel[] };
-    if (!data.data?.length) return null;
-    const m = data.data[0];
-    // Normalize snapshot path → "Org/Model-Name"
-    const raw = m.id;
-    const snap = raw.match(/models--([^/]+)--([^/]+)\/snapshots/);
-    const model = snap ? `${snap[1]}/${snap[2]}` : raw;
-    return { model, maxModelLen: m.max_model_len ?? null };
-  } catch {
-    return null;
-  }
-}
-
-async function getVllmMetrics(): Promise<Record<string, number> | null> {
-  try {
-    const res = await fetch("http://localhost:11434/metrics", {
-      signal: AbortSignal.timeout(2000),
-    });
-    if (!res.ok) return null;
-    const text = await res.text();
-    const result: Record<string, number> = {};
-    // Parse Prometheus exposition format: metric_name{labels} value
-    for (const line of text.split("\n")) {
-      if (line.startsWith("#")) continue;
-      const m = line.match(/^([a-zA-Z_:][a-zA-Z0-9_:]*)\{?[^}]*\}?\s+([\d.eE+-]+)/);
-      if (m) {
-        const key = m[1].replace(/^vllm:/, "");
-        const val = parseFloat(m[2]);
-        if (!isNaN(val)) result[key] = val;
-      }
-    }
-    return Object.keys(result).length ? result : null;
   } catch {
     return null;
   }
@@ -202,13 +155,11 @@ let prevRx: { spark1: number; spark2: number; ts: number } | null = null;
 // ── HF cache config ───────────────────────────────────────────────────────────
 const HF_HUB = "/home/absolome/.cache/huggingface/hub";
 
-// Known expected sizes (measured or derived) — used to compute % complete.
-// Unknown models show raw downloaded bytes with no total.
 const KNOWN_EXPECTED_BYTES: Record<string, number> = {
   "Qwen/Qwen3-Coder-Next-FP8":               80_407_787_882,
   "Qwen/Qwen3-235B-A22B-Instruct-2507-FP8": 236_449_103_093,
   "Qwen/Qwen3.5-122B-A10B-FP8":             127_195_722_339,
-  "openai/gpt-oss-120b":                     85_899_345_920, // MXFP4 ~80 GiB; update on download
+  "openai/gpt-oss-120b":                     85_899_345_920,
 };
 
 function cacheKeyToModelId(key: string): string {
@@ -220,6 +171,13 @@ function cacheKeyToModelId(key: string): string {
 // ── Main handler ──────────────────────────────────────────────────────────────
 export async function GET() {
   const NET_IFACE = "enP7s7"; // WAN interface
+
+  // Detect which inference engine is live (vLLM :11434 / SGLang :30000 / none)
+  const engine = await detectEngine();
+  const headSpec = engine.containers.find((c) => c.key === "head")!;
+  const wSpec  = engine.containers.find((c) => c.key === "worker")!;
+  const w2Spec = engine.containers.find((c) => c.key === "worker2")!;
+  const w3Spec = engine.containers.find((c) => c.key === "worker3")!;
 
   // Auto-discover all model dirs in the HF cache
   let cacheDirs: string[] = [];
@@ -240,11 +198,14 @@ export async function GET() {
     spark1,
     spark2,
     spark3,
-    vllmModels,
-    vllmMetrics,
+    spark4,
+    engineModels,
+    engineMetrics,
+    sglangTokS,
     headStatus,
     workerStatus,
     worker2Status,
+    worker3Status,
     webuiStatus,
     headUptime,
     s1RxBytes,
@@ -253,13 +214,16 @@ export async function GET() {
     getNodeStats(),
     getNodeStats("spark2"),
     getNodeStats("spark3"),
-    getVllmModels(),
-    getVllmMetrics(),
-    getDockerStatus("vllm-head"),
-    getDockerStatus("vllm-worker", "spark2"),
-    getDockerStatus("vllm-worker", "spark3"),
+    getNodeStats("spark4"),
+    getEngineModels(engine.port),
+    getEngineMetrics(engine.port, engine.metricsPrefix),
+    engine.type === "sglang" ? getSglangThroughput() : Promise.resolve(null),
+    getDockerStatus(headSpec.name, headSpec.host),
+    getDockerStatus(wSpec.name, wSpec.host),
+    getDockerStatus(w2Spec.name, w2Spec.host),
+    getDockerStatus(w3Spec.name, w3Spec.host),
     getDockerStatus("open-webui"),
-    getDockerUptime("vllm-head"),
+    getDockerUptime(headSpec.name, headSpec.host),
     getNetworkRx(NET_IFACE),
     getNetworkRx(NET_IFACE, "spark2"),
   ]);
@@ -267,17 +231,12 @@ export async function GET() {
   // Network speed (bytes/sec since last poll) — applies to whichever model is active
   const now = Date.now();
   let dlSpeedS1 = 0;
-  let dlSpeedS2 = 0;
   if (prevRx) {
     const dt = (now - prevRx.ts) / 1000;
-    if (dt > 0) {
-      dlSpeedS1 = Math.max(0, (s1RxBytes - prevRx.spark1) / dt);
-      dlSpeedS2 = Math.max(0, (s2RxBytes - prevRx.spark2) / dt);
-    }
+    if (dt > 0) dlSpeedS1 = Math.max(0, (s1RxBytes - prevRx.spark1) / dt);
   }
   prevRx = { spark1: s1RxBytes, spark2: s2RxBytes, ts: now };
 
-  // Surface models that are actively downloading or partially complete
   const activeDownloads = modelChecks
     .filter((m) => m.active || (m.expectedBytes > 0 && m.bytes > 0 && m.bytes < m.expectedBytes))
     .map((m) => ({
@@ -285,101 +244,79 @@ export async function GET() {
       bytes: m.bytes,
       expectedBytes: m.expectedBytes,
       active: m.active,
-      // Speed attributed to the actively downloading model; Spark2 reads via NFS
       dlSpeedS1: m.active ? dlSpeedS1 : 0,
-      dlSpeedS2: 0, // spark2 has no independent download — reads via NFS from spark1
+      dlSpeedS2: 0,
     }));
+
+  const mkNode = (n: NodeRaw | null) =>
+    n
+      ? {
+          hostname: n.hostname,
+          online: true,
+          cpuPct: n.cpu_pct,
+          cpuCores: n.cpu_cores,
+          memTotal: n.mem_total,
+          memUsed: n.mem_total - n.mem_available,
+          diskTotal: n.disk_total,
+          diskUsed: n.disk_used,
+          loadAvg: n.load_avg,
+          uptime: n.uptime,
+          gpu: {
+            name: n.gpu_name,
+            memTotal: n.gpu_mem_total,
+            memUsed: n.gpu_mem_used,
+            util: n.gpu_util,
+            temp: n.gpu_temp,
+            powerW: n.gpu_power_mw / 1000,
+          },
+        }
+      : null;
 
   return NextResponse.json({
     ts: now,
     nodes: {
-      spark1: spark1
-        ? {
-            hostname: spark1.hostname,
-            online: true,
-            cpuPct: spark1.cpu_pct,
-            cpuCores: spark1.cpu_cores,
-            memTotal: spark1.mem_total,
-            memUsed: spark1.mem_total - spark1.mem_available,
-            diskTotal: spark1.disk_total,
-            diskUsed: spark1.disk_used,
-            loadAvg: spark1.load_avg,
-            uptime: spark1.uptime,
-            gpu: {
-              name: spark1.gpu_name,
-              memTotal: spark1.gpu_mem_total,
-              memUsed: spark1.gpu_mem_used,
-              util: spark1.gpu_util,
-              temp: spark1.gpu_temp,
-              powerW: spark1.gpu_power_mw / 1000,
-            },
-          }
-        : null,
-      spark2: spark2
-        ? {
-            hostname: spark2.hostname,
-            online: true,
-            cpuPct: spark2.cpu_pct,
-            cpuCores: spark2.cpu_cores,
-            memTotal: spark2.mem_total,
-            memUsed: spark2.mem_total - spark2.mem_available,
-            diskTotal: spark2.disk_total,
-            diskUsed: spark2.disk_used,
-            loadAvg: spark2.load_avg,
-            uptime: spark2.uptime,
-            gpu: {
-              name: spark2.gpu_name,
-              memTotal: spark2.gpu_mem_total,
-              memUsed: spark2.gpu_mem_used,
-              util: spark2.gpu_util,
-              temp: spark2.gpu_temp,
-              powerW: spark2.gpu_power_mw / 1000,
-            },
-          }
-        : null,
-      spark3: spark3
-        ? {
-            hostname: spark3.hostname,
-            online: true,
-            cpuPct: spark3.cpu_pct,
-            cpuCores: spark3.cpu_cores,
-            memTotal: spark3.mem_total,
-            memUsed: spark3.mem_total - spark3.mem_available,
-            diskTotal: spark3.disk_total,
-            diskUsed: spark3.disk_used,
-            loadAvg: spark3.load_avg,
-            uptime: spark3.uptime,
-            gpu: {
-              name: spark3.gpu_name,
-              memTotal: spark3.gpu_mem_total,
-              memUsed: spark3.gpu_mem_used,
-              util: spark3.gpu_util,
-              temp: spark3.gpu_temp,
-              powerW: spark3.gpu_power_mw / 1000,
-            },
-          }
-        : null,
+      spark1: mkNode(spark1),
+      spark2: mkNode(spark2),
+      spark3: mkNode(spark3),
+      spark4: mkNode(spark4),
     },
+    // Active-engine descriptor — drives engine-aware labels/topology in the UI.
+    engine: {
+      type: engine.type,
+      label: engine.label,
+      port: engine.port,
+      topology: engine.topology,
+      parallel: engine.parallel,
+      kvDtype: engine.kvDtype,
+      containers: engine.containers.map((c) => ({ key: c.key, label: c.label })),
+    },
+    // `vllm` key kept for backward-compat; now reflects WHICHEVER engine is live.
     vllm: {
-      online: vllmModels !== null,
-      model: vllmModels?.model ?? null,
-      maxModelLen: vllmModels?.maxModelLen ?? null,
+      online: engineModels !== null,
+      model: engineModels?.model ?? null,
+      maxModelLen: engineModels?.maxModelLen ?? null,
+      throughputTokS: sglangTokS,
       containers: {
         head: headStatus,
         worker: workerStatus,
         worker2: worker2Status,
+        worker3: worker3Status,
         webui: webuiStatus,
       },
       headUptimeSec: headUptime,
-      metrics: vllmMetrics
+      metrics: engineMetrics
         ? {
-            requestsRunning: vllmMetrics["num_requests_running"] ?? 0,
-            requestsWaiting: vllmMetrics["num_requests_waiting"] ?? 0,
-            gpuCacheUsagePct: (vllmMetrics["gpu_cache_usage_perc"] ?? 0) * 100,
-            successTotal: vllmMetrics["request_success_total"] ?? 0,
-            promptTokensTotal: vllmMetrics["prompt_tokens_total"] ?? 0,
-            generationTokensTotal: vllmMetrics["generation_tokens_total"] ?? 0,
-            e2eLatencyP50: vllmMetrics["e2e_request_latency_seconds_sum"] ?? 0,
+            requestsRunning:
+              engineMetrics["num_requests_running"] ?? engineMetrics["num_running_reqs"] ?? 0,
+            requestsWaiting:
+              engineMetrics["num_requests_waiting"] ?? engineMetrics["num_waiting_reqs"] ?? 0,
+            gpuCacheUsagePct:
+              (engineMetrics["gpu_cache_usage_perc"] ?? engineMetrics["token_usage"] ?? 0) * 100,
+            successTotal:
+              engineMetrics["request_success_total"] ?? engineMetrics["num_requests_total"] ?? 0,
+            promptTokensTotal: engineMetrics["prompt_tokens_total"] ?? 0,
+            generationTokensTotal: engineMetrics["generation_tokens_total"] ?? 0,
+            e2eLatencyP50: engineMetrics["e2e_request_latency_seconds_sum"] ?? 0,
           }
         : null,
     },
