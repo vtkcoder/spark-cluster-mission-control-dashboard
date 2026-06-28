@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { ModelTreemap } from "./models/ModelTreemap";
+import { ModelRow } from "./models/ModelRow";
+import { ModelDetailDrawer } from "./models/ModelDetailDrawer";
 
 // Local UI types (mirror of the server ModelsResponse — keep client server-free).
 export interface UiMeta {
@@ -30,6 +32,11 @@ export function ModelManagerPanel() {
   const [data, setData] = useState<UiResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [q, setQ] = useState("");
+  const [sort, setSort] = useState<"size" | "name" | "date">("size");
+  const [modalityFilter, setModalityFilter] = useState<string>("all");
+  const [groupDup, setGroupDup] = useState(false);
+  const [expanded, setExpanded] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -46,6 +53,13 @@ export function ModelManagerPanel() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  const rowWithDrawer = (m: UiModel, maxBytes: number) => (
+    <div key={m.id}>
+      <ModelRow model={m} maxBytes={maxBytes} expanded={expanded === m.id} onToggle={() => setExpanded(expanded === m.id ? null : m.id)} />
+      {expanded === m.id && <ModelDetailDrawer model={m} onChanged={load} />}
+    </div>
+  );
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -72,14 +86,52 @@ export function ModelManagerPanel() {
         </div>
       )}
 
-      {/* Model list — filled by Task 12 */}
-      <div id="model-list-slot" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {data?.models.map((m) => (
-          <div key={m.id} style={{ padding: "10px 14px", background: "#0c1220", border: "1px solid #1a2540", borderRadius: 8, fontSize: 12, color: "#e2e8f0", display: "flex", justifyContent: "space-between" }}>
-            <span>{m.name}</span>
-            <span style={{ color: "#94a3b8" }}>{gb(m.sizeBytes)} · {m.health}</span>
-          </div>
-        ))}
+      {/* Toolbar */}
+      {data && (
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="search…" style={{ background: "#06090f", border: "1px solid #1a2540", borderRadius: 6, color: "#e2e8f0", fontSize: 11, padding: "6px 10px", fontFamily: "inherit" }} />
+          <select value={sort} onChange={(e) => setSort(e.target.value as "size" | "name" | "date")} style={selStyle}>
+            <option value="size">sort: size</option>
+            <option value="name">sort: name</option>
+            <option value="date">sort: date</option>
+          </select>
+          <select value={modalityFilter} onChange={(e) => setModalityFilter(e.target.value)} style={selStyle}>
+            {["all", "text", "vision", "audio", "image-gen", "unknown"].map((m) => <option key={m} value={m}>{m === "all" ? "modality: all" : m}</option>)}
+          </select>
+          <label style={{ fontSize: 10, color: "#94a3b8", display: "flex", alignItems: "center", gap: 5 }}>
+            <input type="checkbox" checked={groupDup} onChange={(e) => setGroupDup(e.target.checked)} /> group duplicates
+          </label>
+        </div>
+      )}
+
+      {/* List */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {data && (() => {
+          let list = data.models.filter((m) =>
+            (modalityFilter === "all" || m.modality === modalityFilter) &&
+            (q === "" || m.id.toLowerCase().includes(q.toLowerCase()))
+          );
+          list = [...list].sort((a, b) =>
+            sort === "size" ? b.sizeBytes - a.sizeBytes :
+            sort === "name" ? a.name.localeCompare(b.name) :
+            b.mtime - a.mtime
+          );
+          const maxBytes = Math.max(1, ...list.map((m) => m.sizeBytes));
+
+          if (groupDup) {
+            const groups = data.groups
+              .map((g) => ({ ...g, members: g.members.filter((m) => list.some((l) => l.id === m.id)) }))
+              .filter((g) => g.members.length > 0)
+              .sort((a, b) => b.totalBytes - a.totalBytes);
+            return groups.map((g) => (
+              <div key={g.key} style={{ border: g.unique ? "none" : "1px dashed #14b8a644", borderRadius: 8, padding: g.unique ? 0 : 6, display: "flex", flexDirection: "column", gap: 6 }}>
+                {!g.unique && <div style={{ fontSize: 9, color: "#2dd4bf", letterSpacing: "0.1em" }}>VARIANT GROUP · {g.members.length} · {gb(g.totalBytes)} total · {gb(g.redundantBytes)} redundant</div>}
+                {g.members.map((m) => rowWithDrawer(m, maxBytes))}
+              </div>
+            ));
+          }
+          return list.map((m) => rowWithDrawer(m, maxBytes));
+        })()}
       </div>
     </div>
   );
@@ -101,3 +153,5 @@ export function btn(accent: string): React.CSSProperties {
     cursor: "pointer", fontFamily: "inherit", textTransform: "uppercase",
   };
 }
+
+const selStyle: React.CSSProperties = { background: "#06090f", border: "1px solid #1a2540", borderRadius: 6, color: "#94a3b8", fontSize: 10, padding: "6px 8px", fontFamily: "inherit" };
