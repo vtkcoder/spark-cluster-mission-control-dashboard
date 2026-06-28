@@ -1,6 +1,6 @@
 // HF cache scanner for the Model Manager. Pure helpers + scanModels().
 import { readdirSync, existsSync, readFileSync, statSync } from "fs";
-import { join } from "path";
+import { join, resolve } from "path";
 import { execSync } from "child_process";
 
 export const HF_CACHE = "/home/absolome/.cache/huggingface/hub";
@@ -272,4 +272,25 @@ export function groupDuplicates(models: ScannedModel[]): ModelGroup[] {
     });
   }
   return groups.sort((a, b) => b.totalBytes - a.totalBytes);
+}
+
+export function modelIdToCacheKey(modelId: string): string {
+  return "models--" + modelId.replace("/", "--");
+}
+
+export function resolveModelDir(modelId: string, cacheRoot: string = HF_CACHE): string {
+  return join(cacheRoot, modelIdToCacheKey(modelId));
+}
+
+// True only if absPath is a direct `models--*` child of cacheRoot and contains
+// no shell metacharacters/wildcards. Defends rm -rf against traversal/injection.
+export function validateDeletePath(absPath: string, cacheRoot: string = HF_CACHE): boolean {
+  if (/[*?;&|`$(){}<>\n\\]/.test(absPath)) return false;
+  const resolved = resolve(absPath);
+  const prefix = resolve(cacheRoot) + "/models--";
+  if (!resolved.startsWith(prefix)) return false;
+  // Must be exactly one path segment below the cache root (no nested traversal).
+  const rest = resolved.slice(resolve(cacheRoot).length + 1);
+  if (rest.includes("/")) return false;
+  return rest.startsWith("models--");
 }
