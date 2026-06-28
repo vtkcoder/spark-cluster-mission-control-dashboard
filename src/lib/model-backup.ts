@@ -1,7 +1,7 @@
 import { spawn, execSync } from "child_process";
 import { existsSync, mkdirSync } from "fs";
 import { join } from "path";
-import { resolveModelDir, modelIdToCacheKey } from "./model-scan";
+import { findModelDir, idToSafeName } from "./model-scan";
 import { logEvent, updateEvent } from "./db";
 
 export interface BackupTarget { mountpoint: string; label: string; freeBytes: number }
@@ -60,11 +60,11 @@ export function startBackup(modelId: string, target: string): { error?: string }
   if (!ALLOWED_MOUNT_PREFIXES.some((p) => target.startsWith(p))) return { error: "Target is not an allowed external mount." };
   if (!existsSync(target)) return { error: "Target mountpoint does not exist." };
 
-  const src = resolveModelDir(modelId);
-  if (!existsSync(src)) return { error: "Source model dir not found." };
+  const src = findModelDir(NODE, modelId);
+  if (!src || !existsSync(src)) return { error: "Source model dir not found." };
 
   const destRoot = join(target, "cluster-dash-models");
-  const dest = join(destRoot, modelIdToCacheKey(modelId));
+  const dest = join(destRoot, idToSafeName(modelId));
   try { mkdirSync(dest, { recursive: true }); } catch (e) { return { error: (e as Error).message }; }
 
   const job: BackupJob = {

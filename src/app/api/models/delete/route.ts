@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { existsSync } from "fs";
 import { exec } from "child_process";
 import { promisify } from "util";
-import { resolveModelDir, validateDeletePath, shortName } from "@/lib/model-scan";
+import { findModelDir, validateDeletePath, shortName } from "@/lib/model-scan";
 import { detectEngine, getEngineModels, HEAD_HOST, API_PORT } from "@/lib/engine";
 import { logEvent, updateEvent } from "@/lib/db";
 import { backupInFlightFor } from "@/lib/model-backup";
@@ -36,8 +36,9 @@ export async function POST(req: NextRequest) {
     if (backupInFlightFor(modelId)) {
       return NextResponse.json({ error: "Refusing: a backup of this model is in progress." }, { status: 409 });
     }
-    // 4) Path safety
-    const dir = resolveModelDir(modelId);
+    // 4) Resolve the real dir from a scan (works for HF + flat layouts), then path safety
+    const dir = findModelDir(NODE, modelId);
+    if (!dir) return NextResponse.json({ error: "Model dir not found." }, { status: 404 });
     if (!validateDeletePath(dir)) {
       return NextResponse.json({ error: "Unsafe path; aborting." }, { status: 400 });
     }

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { scanModels, groupDuplicates } from "@/lib/model-scan";
+import { scanAllModels, groupDuplicates } from "@/lib/model-scan";
 import { getMetaMap, type ModelMeta } from "@/lib/db";
 import { detectEngine, getEngineModels, HEAD_HOST, API_PORT } from "@/lib/engine";
 import type { ModelsResponse, ModelWithMeta } from "@/lib/model-types";
@@ -10,7 +10,7 @@ const NODE = "spark1";
 export async function GET() {
   try {
     // Filesystem scan + DB meta + live served-model detection, in parallel where possible.
-    const models = scanModels(undefined, NODE);
+    const models = scanAllModels(NODE);
     const [metaMap, served] = await Promise.all([
       getMetaMap(NODE).catch(() => ({} as Record<string, ModelMeta>)), // DB optional: scan still works without it
       detectServed().catch(() => null),

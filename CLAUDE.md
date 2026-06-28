@@ -170,7 +170,7 @@ All styling is inline (no Tailwind classes except globals).
 
 ### Model Manager (MODELS tab)
 
-Scans spark1's HF cache (`/home/absolome/.cache/huggingface/hub`) and manages models.
+Scans spark1's model storage and manages models. Two scan roots (see `SCAN_ROOTS` in `model-scan.ts`): the HF hub cache `/home/absolome/.cache/huggingface/hub` (`models--*/snapshots/` layout, `source: "hf"`) AND `/home/absolome/models` (flat layout — `config.json` + `*.safetensors` directly in the dir, e.g. `~/models/ornith/Ornith-1.0-397B-FP8`, `source: "flat"`). Both support facts/health/metadata/usage/backup/delete.
 - API: `src/app/api/models/{route,usage,meta,delete,backup}/route.ts`
 - Libs: `src/lib/{db,model-scan,model-usage,model-backup,model-types}.ts`
 - UI: `src/components/ModelManagerPanel.tsx` + `src/components/models/*`

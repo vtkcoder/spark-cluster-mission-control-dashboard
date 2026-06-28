@@ -4,6 +4,9 @@ import { join, resolve } from "path";
 import { execSync } from "child_process";
 
 export const HF_CACHE = "/home/absolome/.cache/huggingface/hub";
+// Flat-layout model root: dirs that hold config.json + *.safetensors directly
+// (no HF models--/snapshots structure), e.g. ~/models/ornith/Ornith-1.0-397B-FP8.
+export const MODELS_ROOT = "/home/absolome/models";
 
 export type Modality = "text" | "vision" | "audio" | "image-gen" | "unknown";
 
@@ -120,6 +123,8 @@ export interface ScannedModel {
   mtime: number;
   groupKey: string;
   served: boolean;
+  dir: string;                 // absolute path to the model directory
+  source: "hf" | "flat";       // HF hub cache vs flat-layout (~/models)
 }
 
 const STUB_MAX_BYTES = 50 * 1024 * 1024; // <50MB with a config = weights missing
@@ -241,6 +246,7 @@ export function scanModels(cacheRoot: string = HF_CACHE, node = "spark1"): Scann
       quant: facts.quant, contextLen: facts.contextLen, dtype: facts.dtype,
       health, healthDetail, snapshotHash: hash, mtime,
       groupKey: normalizeBaseKey(id), served: false,
+      dir, source: "hf",
     };
   });
 }
@@ -282,15 +288,136 @@ export function resolveModelDir(modelId: string, cacheRoot: string = HF_CACHE): 
   return join(cacheRoot, modelIdToCacheKey(modelId));
 }
 
-// True only if absPath is a direct `models--*` child of cacheRoot and contains
-// no shell metacharacters/wildcards. Defends rm -rf against traversal/injection.
+// True only if absPath is a legitimate model directory under one of the allowed
+// roots and contains no shell metacharacters/wildcards. Defends rm -rf against
+// traversal/injection. Rules per root:
+//   • HF cache  → must be a direct `models--*` child (single segment).
+//   • flat root → must be a nested dir at least one segment below the root.
+// `cacheRoot` is kept for back-compat (callers/tests pass the HF cache root);
+// MODELS_ROOT is always additionally allowed.
 export function validateDeletePath(absPath: string, cacheRoot: string = HF_CACHE): boolean {
   if (/[*?;&|`$(){}<>\n\\]/.test(absPath)) return false;
   const resolved = resolve(absPath);
-  const prefix = resolve(cacheRoot) + "/models--";
-  if (!resolved.startsWith(prefix)) return false;
-  // Must be exactly one path segment below the cache root (no nested traversal).
-  const rest = resolved.slice(resolve(cacheRoot).length + 1);
-  if (rest.includes("/")) return false;
-  return rest.startsWith("models--");
+  const hfRoot = resolve(cacheRoot);
+  const flatRoot = resolve(MODELS_ROOT);
+
+  // HF cache: direct models-- child only.
+  if (resolved.startsWith(hfRoot + "/")) {
+    const rest = resolved.slice(hfRoot.length + 1);
+    if (rest.includes("/")) return false;
+    return rest.startsWith("models--");
+  }
+  // Flat root: any directory strictly below it (depth >= 1), never the root itself.
+  if (resolved.startsWith(flatRoot + "/")) {
+    const rest = resolved.slice(flatRoot.length + 1);
+    return rest.length > 0;
+  }
+  return false;
+}
+
+// ── Flat-layout scanning (~/models) ───────────────────────────────────────────
+// Recursively find directories that directly contain config.json or *.safetensors
+// (a "flat" model). Does not descend into a model dir once matched (so subfolders
+// like assets/ aren't treated as separate models).
+function findFlatModelDirs(root: string, maxDepth = 3): string[] {
+  const out: string[] = [];
+  const walk = (d: string, depth: number) => {
+    let entries: string[];
+    try { entries = readdirSync(d); } catch { return; }
+    const isModel = entries.some((f) => f === "config.json" || f.endsWith(".safetensors") || f.endsWith(".safetensors.incomplete"));
+    if (isModel) { out.push(d); return; } // matched — don't recurse inside a model
+    if (depth >= maxDepth) return;
+    for (const e of entries) {
+      const p = join(d, e);
+      try { if (statSync(p).isDirectory()) walk(p, depth + 1); } catch { /* skip */ }
+    }
+  };
+  walk(root, 0);
+  return out;
+}
+
+function flatBlobHealth(dir: string): { incomplete: number; weights: number } {
+  let incomplete = 0, weights = 0;
+  let entries: string[] = [];
+  try { entries = readdirSync(dir); } catch { return { incomplete: 0, weights: 0 }; }
+  for (const f of entries) {
+    if (f.endsWith(".incomplete")) {
+      try { if (statSync(join(dir, f)).size > 0) incomplete++; } catch { /* skip */ }
+    } else if (f.endsWith(".safetensors") || f.endsWith(".bin") || f.endsWith(".gguf")) weights++;
+  }
+  return { incomplete, weights };
+}
+
+export function scanFlatModels(root: string = MODELS_ROOT, node = "spark1"): ScannedModel[] {
+  return findFlatModelDirs(root).map((dir) => {
+    const id = dir.slice(resolve(root).length + 1) || dir.split("/").pop() || dir;
+    const name = id.split("/").pop() ?? id;
+    const org = id.includes("/") ? id.split("/")[0] : "";
+
+    const cfgFiles: ConfigFiles = { nameHint: name };
+    cfgFiles.config = readJson(join(dir, "config.json"));
+    cfgFiles.generation = readJson(join(dir, "generation_config.json"));
+    cfgFiles.preprocessor = readJson(join(dir, "preprocessor_config.json"));
+    cfgFiles.processor = readJson(join(dir, "processor_config.json"));
+    cfgFiles.modelIndex = readJson(join(dir, "model_index.json"));
+
+    const facts = parseFacts(cfgFiles);
+    const modality = classifyModality(cfgFiles);
+    const sizeBytes = dirBytes(dir);
+    const { incomplete, weights } = flatBlobHealth(dir);
+    const hasConfig = !!cfgFiles.config || !!cfgFiles.modelIndex;
+
+    let health: Health;
+    let healthDetail: string;
+    if (incomplete > 0) {
+      health = "downloading";
+      healthDetail = `${incomplete} shard(s) still downloading`;
+    } else if (hasConfig && sizeBytes < STUB_MAX_BYTES) {
+      health = "stub";
+      healthDetail = "config present but weights missing";
+    } else if (weights === 0) {
+      health = "incomplete";
+      healthDetail = "no weight files present";
+    } else {
+      health = "ready";
+      healthDetail = "complete";
+    }
+
+    let mtime = 0;
+    try { mtime = statSync(dir).mtimeMs; } catch { /* keep 0 */ }
+
+    let paramCountB: number | null = null;
+    if (sizeBytes > 0 && health === "ready") {
+      const bpp = facts.quant && /FP4|NVFP4|MXFP4/.test(facts.quant) ? 0.5
+        : facts.quant === "FP8" ? 1
+        : facts.dtype && /16/.test(facts.dtype) ? 2 : 1;
+      paramCountB = Math.round((sizeBytes / bpp / 1e9) * 10) / 10;
+    }
+
+    return {
+      node, id, org, name, sizeBytes, modality,
+      arch: facts.arch, modelType: facts.modelType, paramCountB,
+      quant: facts.quant, contextLen: facts.contextLen, dtype: facts.dtype,
+      health, healthDetail, snapshotHash: null, mtime,
+      groupKey: normalizeBaseKey(id), served: false,
+      dir, source: "flat",
+    };
+  });
+}
+
+// Combined scan across the HF cache and the flat-layout root.
+export function scanAllModels(node = "spark1"): ScannedModel[] {
+  return [...scanModels(HF_CACHE, node), ...scanFlatModels(MODELS_ROOT, node)];
+}
+
+// Resolve a model id (from either layout) to its absolute dir, via a fresh scan.
+// Returns null if no model with that id exists — callers must treat that as 404.
+export function findModelDir(node: string, id: string): string | null {
+  const m = scanAllModels(node).find((x) => x.id === id);
+  return m?.dir ?? null;
+}
+
+// Filesystem-safe folder name for a model id (used for backup destination dirs).
+export function idToSafeName(id: string): string {
+  return id.replace(/\//g, "--");
 }
