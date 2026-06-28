@@ -16,6 +16,7 @@ export interface UiModel {
   paramCountB: number | null; quant: string | null; contextLen: number | null;
   dtype: string | null; health: string; healthDetail: string;
   snapshotHash: string | null; mtime: number; groupKey: string; served: boolean;
+  source: string; dir: string;
   meta: UiMeta | null;
 }
 export interface UiGroup { key: string; members: UiModel[]; totalBytes: number; redundantBytes: number; unique: boolean }
@@ -35,6 +36,7 @@ export function ModelManagerPanel() {
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<"size" | "name" | "date">("size");
   const [modalityFilter, setModalityFilter] = useState<string>("all");
+  const [sourceFilter, setSourceFilter] = useState<string>("all");
   const [groupDup, setGroupDup] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
 
@@ -76,6 +78,38 @@ export function ModelManagerPanel() {
         </div>
       </div>
 
+      {/* Per-source breakdown */}
+      {data && (() => {
+        const meta: Record<string, { label: string; color: string }> = {
+          hf: { label: "HF CACHE", color: "#3b82f6" },
+          flat: { label: "~/MODELS", color: "#10b981" },
+          lmstudio: { label: "LM STUDIO", color: "#fb923c" },
+        };
+        const by: Record<string, { n: number; bytes: number }> = {};
+        for (const m of data.models) {
+          (by[m.source] ??= { n: 0, bytes: 0 });
+          by[m.source].n++; by[m.source].bytes += m.sizeBytes;
+        }
+        return (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {Object.entries(by).map(([src, v]) => {
+              const mt = meta[src] ?? { label: src.toUpperCase(), color: "#64748b" };
+              const active = sourceFilter === src;
+              return (
+                <button key={src} onClick={() => setSourceFilter(active ? "all" : src)}
+                  style={{ display: "flex", alignItems: "center", gap: 7, padding: "5px 12px", borderRadius: 6,
+                    background: active ? `${mt.color}22` : "#0c1220", border: `1px solid ${active ? mt.color : "#1a2540"}`,
+                    cursor: "pointer", fontFamily: "inherit" }}>
+                  <span style={{ width: 7, height: 7, borderRadius: 2, background: mt.color }} />
+                  <span style={{ fontSize: 10, color: mt.color, letterSpacing: "0.08em" }}>{mt.label}</span>
+                  <span style={{ fontSize: 10, color: "#94a3b8" }}>{v.n} · {gb(v.bytes)}</span>
+                </button>
+              );
+            })}
+          </div>
+        );
+      })()}
+
       {err && <div style={{ color: "#ef4444", fontSize: 11 }}>⚠ {err}</div>}
 
       {/* Disk treemap */}
@@ -98,6 +132,9 @@ export function ModelManagerPanel() {
           <select value={modalityFilter} onChange={(e) => setModalityFilter(e.target.value)} style={selStyle}>
             {["all", "text", "vision", "audio", "image-gen", "unknown"].map((m) => <option key={m} value={m}>{m === "all" ? "modality: all" : m}</option>)}
           </select>
+          <select value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)} style={selStyle}>
+            {[["all", "source: all"], ["hf", "HF cache"], ["flat", "~/models"], ["lmstudio", "LM Studio"]].map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
           <label style={{ fontSize: 10, color: "#94a3b8", display: "flex", alignItems: "center", gap: 5 }}>
             <input type="checkbox" checked={groupDup} onChange={(e) => setGroupDup(e.target.checked)} /> group duplicates
           </label>
@@ -109,6 +146,7 @@ export function ModelManagerPanel() {
         {data && (() => {
           let list = data.models.filter((m) =>
             (modalityFilter === "all" || m.modality === modalityFilter) &&
+            (sourceFilter === "all" || m.source === sourceFilter) &&
             (q === "" || m.id.toLowerCase().includes(q.toLowerCase()))
           );
           list = [...list].sort((a, b) =>

@@ -5,6 +5,11 @@ import { gb } from "../ModelManagerPanel";
 
 const MOD_COLORS: Record<string, string> = { text: "#3b82f6", vision: "#8b5cf6", audio: "#22d3ee", "image-gen": "#f59e0b", unknown: "#475569" };
 const HEALTH_COLORS: Record<string, string> = { ready: "#10b981", downloading: "#3b82f6", incomplete: "#f59e0b", stub: "#f59e0b", broken: "#ef4444" };
+const SOURCE_BADGE: Record<string, { label: string; color: string }> = {
+  hf: { label: "HF", color: "#3b82f6" },
+  flat: { label: "~/models", color: "#10b981" },
+  lmstudio: { label: "LM Studio", color: "#fb923c" },
+};
 
 export function ModelRow({ model, maxBytes, expanded, onToggle }: { model: UiModel; maxBytes: number; expanded: boolean; onToggle: () => void }) {
   const pct = maxBytes > 0 ? (model.sizeBytes / maxBytes) * 100 : 0;
@@ -14,6 +19,7 @@ export function ModelRow({ model, maxBytes, expanded, onToggle }: { model: UiMod
         <span style={{ width: 8, height: 8, borderRadius: "50%", background: HEALTH_COLORS[model.health] ?? "#475569" }} title={model.healthDetail} />
         {model.meta?.starred && <span style={{ color: "#f59e0b", fontSize: 11 }}>★</span>}
         <span style={{ fontSize: 12, color: "#e2e8f0", fontWeight: 600 }}>{model.name}</span>
+        {(() => { const s = SOURCE_BADGE[model.source]; return s ? <span style={{ fontSize: 9, color: s.color, background: `${s.color}1a`, border: `1px solid ${s.color}55`, borderRadius: 4, padding: "1px 5px" }}>{s.label}</span> : null; })()}
         <span style={{ fontSize: 9, color: MOD_COLORS[model.modality], border: `1px solid ${MOD_COLORS[model.modality]}55`, borderRadius: 4, padding: "1px 5px" }}>{model.modality}</span>
         {model.quant && <span style={{ fontSize: 9, color: "#94a3b8" }}>{model.quant}</span>}
         {model.served && <span style={{ fontSize: 9, color: "#14b8a6", border: "1px solid #14b8a655", borderRadius: 4, padding: "1px 5px" }}>SERVED</span>}

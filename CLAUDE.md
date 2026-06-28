@@ -170,7 +170,12 @@ All styling is inline (no Tailwind classes except globals).
 
 ### Model Manager (MODELS tab)
 
-Scans spark1's model storage and manages models. Two scan roots (see `SCAN_ROOTS` in `model-scan.ts`): the HF hub cache `/home/absolome/.cache/huggingface/hub` (`models--*/snapshots/` layout, `source: "hf"`) AND `/home/absolome/models` (flat layout — `config.json` + `*.safetensors` directly in the dir, e.g. `~/models/ornith/Ornith-1.0-397B-FP8`, `source: "flat"`). Both support facts/health/metadata/usage/backup/delete.
+Scans spark1's model storage and manages models. Three scan roots (`scanAllModels` in `model-scan.ts`):
+- **HF hub cache** `/home/absolome/.cache/huggingface/hub` — `models--*/snapshots/` layout, `source: "hf"`.
+- **Flat layout** `/home/absolome/models` — `config.json` + `*.safetensors` directly in the dir (e.g. `~/models/ornith/Ornith-1.0-397B-FP8`), `source: "flat"`.
+- **LM Studio** `/home/absolome/.lmstudio/models` — `<publisher>/<repo>/*.gguf`, `source: "lmstudio"`; quant parsed from the gguf filename, `mmproj-*.gguf` ⇒ vision.
+
+All three support facts/health/metadata/usage/backup/delete (delete path-safety allows all three roots; `findModelDir` resolves the real dir per id). UI shows a per-source breakdown strip + source filter + per-row source badge.
 - API: `src/app/api/models/{route,usage,meta,delete,backup}/route.ts`
 - Libs: `src/lib/{db,model-scan,model-usage,model-backup,model-types}.ts`
 - UI: `src/components/ModelManagerPanel.tsx` + `src/components/models/*`

@@ -7,6 +7,8 @@ export const HF_CACHE = "/home/absolome/.cache/huggingface/hub";
 // Flat-layout model root: dirs that hold config.json + *.safetensors directly
 // (no HF models--/snapshots structure), e.g. ~/models/ornith/Ornith-1.0-397B-FP8.
 export const MODELS_ROOT = "/home/absolome/models";
+// LM Studio store: <publisher>/<repo>/*.gguf under here.
+export const LMSTUDIO_ROOT = "/home/absolome/.lmstudio/models";
 
 export type Modality = "text" | "vision" | "audio" | "image-gen" | "unknown";
 
@@ -43,6 +45,18 @@ const VARIANT_TOKENS = [
   "NVFP4", "MXFP4", "FP8", "FP4", "BF16", "FP16", "INT8", "INT4", "AWQ", "GPTQ", "GGUF",
   "REAP", "GB10", "INSTRUCT", "CHAT", "BASE",
 ];
+
+// Quant tokens recognized in GGUF filenames (LM Studio), e.g. Q4_K_M, IQ4_XS, MXFP4.
+function parseGgufQuant(filename: string): string | null {
+  const m = filename.match(/\b(IQ\d+[A-Z_]*|Q\d+_K_[MS]|Q\d+_K|Q\d+_\d+|Q\d+|MXFP4|BF16|F16|F32)\b/i);
+  return m ? m[1].toUpperCase() : null;
+}
+
+// Parse a leading param-count tag from a model name, e.g. "70B" -> 70, "122B-A10B" -> 122.
+function parseParamCountFromName(name: string): number | null {
+  const m = name.match(/(\d+(?:\.\d+)?)B(?![a-z])/i);
+  return m ? parseFloat(m[1]) : null;
+}
 
 export function normalizeBaseKey(modelId: string): string {
   let s = shortName(modelId).toUpperCase();
@@ -123,8 +137,8 @@ export interface ScannedModel {
   mtime: number;
   groupKey: string;
   served: boolean;
-  dir: string;                 // absolute path to the model directory
-  source: "hf" | "flat";       // HF hub cache vs flat-layout (~/models)
+  dir: string;                       // absolute path to the model directory
+  source: "hf" | "flat" | "lmstudio"; // HF hub cache · flat-layout (~/models) · LM Studio GGUF
 }
 
 const STUB_MAX_BYTES = 50 * 1024 * 1024; // <50MB with a config = weights missing
@@ -307,10 +321,13 @@ export function validateDeletePath(absPath: string, cacheRoot: string = HF_CACHE
     if (rest.includes("/")) return false;
     return rest.startsWith("models--");
   }
-  // Flat root: any directory strictly below it (depth >= 1), never the root itself.
-  if (resolved.startsWith(flatRoot + "/")) {
-    const rest = resolved.slice(flatRoot.length + 1);
-    return rest.length > 0;
+  // Flat-style roots (~/models, LM Studio): any directory strictly below the
+  // root (depth >= 1), never the root itself.
+  for (const fr of [flatRoot, resolve(LMSTUDIO_ROOT)]) {
+    if (resolved.startsWith(fr + "/")) {
+      const rest = resolved.slice(fr.length + 1);
+      return rest.length > 0;
+    }
   }
   return false;
 }
@@ -319,13 +336,12 @@ export function validateDeletePath(absPath: string, cacheRoot: string = HF_CACHE
 // Recursively find directories that directly contain config.json or *.safetensors
 // (a "flat" model). Does not descend into a model dir once matched (so subfolders
 // like assets/ aren't treated as separate models).
-function findFlatModelDirs(root: string, maxDepth = 3): string[] {
+function findModelDirsBy(root: string, isModel: (entries: string[]) => boolean, maxDepth = 3): string[] {
   const out: string[] = [];
   const walk = (d: string, depth: number) => {
     let entries: string[];
     try { entries = readdirSync(d); } catch { return; }
-    const isModel = entries.some((f) => f === "config.json" || f.endsWith(".safetensors") || f.endsWith(".safetensors.incomplete"));
-    if (isModel) { out.push(d); return; } // matched — don't recurse inside a model
+    if (isModel(entries)) { out.push(d); return; } // matched — don't recurse inside a model
     if (depth >= maxDepth) return;
     for (const e of entries) {
       const p = join(d, e);
@@ -334,6 +350,14 @@ function findFlatModelDirs(root: string, maxDepth = 3): string[] {
   };
   walk(root, 0);
   return out;
+}
+
+function findFlatModelDirs(root: string, maxDepth = 3): string[] {
+  return findModelDirsBy(
+    root,
+    (entries) => entries.some((f) => f === "config.json" || f.endsWith(".safetensors") || f.endsWith(".safetensors.incomplete")),
+    maxDepth,
+  );
 }
 
 function flatBlobHealth(dir: string): { incomplete: number; weights: number } {
@@ -405,9 +429,52 @@ export function scanFlatModels(root: string = MODELS_ROOT, node = "spark1"): Sca
   });
 }
 
-// Combined scan across the HF cache and the flat-layout root.
+// ── LM Studio (GGUF) scanning ─────────────────────────────────────────────────
+// A model = a dir directly containing *.gguf files (LM Studio's publisher/repo
+// layout). GGUF has no config.json, so facts are best-effort from filenames.
+export function scanLmStudioModels(root: string = LMSTUDIO_ROOT, node = "spark1"): ScannedModel[] {
+  const dirs = findModelDirsBy(root, (entries) => entries.some((f) => f.endsWith(".gguf") || f.endsWith(".gguf.part") || f.endsWith(".gguf.download")));
+  return dirs.map((dir) => {
+    const id = dir.slice(resolve(root).length + 1) || dir.split("/").pop() || dir;
+    const name = id.split("/").pop() ?? id;
+    const org = id.includes("/") ? id.split("/")[0] : "";
+
+    let entries: string[] = [];
+    try { entries = readdirSync(dir); } catch { /* unreadable */ }
+    const ggufs = entries.filter((f) => f.endsWith(".gguf"));
+    const partials = entries.filter((f) => f.endsWith(".part") || f.endsWith(".download") || f.endsWith(".incomplete"));
+    const mmproj = ggufs.some((f) => f.toLowerCase().startsWith("mmproj"));
+    const primary = ggufs.find((f) => !f.toLowerCase().startsWith("mmproj")) ?? ggufs[0] ?? "";
+
+    const sizeBytes = dirBytes(dir);
+    let health: Health;
+    let healthDetail: string;
+    if (partials.length > 0) { health = "downloading"; healthDetail = `${partials.length} partial file(s)`; }
+    else if (ggufs.length === 0) { health = "incomplete"; healthDetail = "no .gguf files"; }
+    else { health = "ready"; healthDetail = "complete"; }
+
+    let mtime = 0;
+    try { mtime = statSync(dir).mtimeMs; } catch { /* keep 0 */ }
+
+    return {
+      node, id, org, name, sizeBytes,
+      modality: mmproj ? "vision" : "text",
+      arch: null, modelType: "gguf", paramCountB: parseParamCountFromName(name),
+      quant: parseGgufQuant(primary), contextLen: null, dtype: null,
+      health, healthDetail, snapshotHash: null, mtime,
+      groupKey: normalizeBaseKey(id), served: false,
+      dir, source: "lmstudio",
+    };
+  });
+}
+
+// Combined scan across the HF cache, the flat-layout root, and LM Studio.
 export function scanAllModels(node = "spark1"): ScannedModel[] {
-  return [...scanModels(HF_CACHE, node), ...scanFlatModels(MODELS_ROOT, node)];
+  return [
+    ...scanModels(HF_CACHE, node),
+    ...scanFlatModels(MODELS_ROOT, node),
+    ...scanLmStudioModels(LMSTUDIO_ROOT, node),
+  ];
 }
 
 // Resolve a model id (from either layout) to its absolute dir, via a fresh scan.
