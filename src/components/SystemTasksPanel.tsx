@@ -310,7 +310,7 @@ function NodeTasksColumn({
   data,
 }: {
   label: string;
-  role: "MASTER" | "WORKER";
+  role: string;
   ip: string;
   data: NodeTasks;
 }) {
@@ -365,9 +365,9 @@ function NodeTasksColumn({
               fontSize: 9,
               padding: "1px 5px",
               borderRadius: 4,
-              background: role === "MASTER" ? "#1e3a8a22" : "#4c1d9522",
-              color: role === "MASTER" ? "#3b82f6" : "#8b5cf6",
-              border: `1px solid ${role === "MASTER" ? "#3b82f633" : "#7c3aed33"}`,
+              background: /HEAD|MASTER/i.test(role) ? "#1e3a8a22" : "#4c1d9522",
+              color: /HEAD|MASTER/i.test(role) ? "#3b82f6" : "#8b5cf6",
+              border: `1px solid ${/HEAD|MASTER/i.test(role) ? "#3b82f633" : "#7c3aed33"}`,
               letterSpacing: "0.1em",
               textTransform: "uppercase",
             }}
@@ -503,7 +503,7 @@ export function SystemTasksPanel({ data, loading, singleNode = false }: SystemTa
       )}
       <NodeTasksColumn
         label="SPARK1"
-        role="MASTER"
+        role="DEV · NFS"
         ip="192.168.99.10"
         data={data.spark1}
       />
@@ -511,19 +511,19 @@ export function SystemTasksPanel({ data, loading, singleNode = false }: SystemTa
         <>
           <NodeTasksColumn
             label="SPARK2"
-            role="WORKER"
+            role="HEAD · rank0"
             ip="192.168.99.11"
             data={data.spark2}
           />
           <NodeTasksColumn
             label="SPARK3"
-            role="WORKER"
+            role="rank1"
             ip="192.168.99.12"
             data={data.spark3}
           />
           <NodeTasksColumn
             label="SPARK4"
-            role="WORKER"
+            role="rank2"
             ip="192.168.99.13"
             data={data.spark4}
           />

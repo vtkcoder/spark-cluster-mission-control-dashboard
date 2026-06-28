@@ -1,5 +1,7 @@
 # Spark Cluster Mission Control — Claude Code Agent
 
+> **⚡ CURRENT CONFIG (2026-06-10) — read first.** The inference cluster head moved to **spark2**. spark1 was freed as a dev box / NFS weight server and is **no longer an inference node** (still monitored). Active engine: **vLLM**, container **`vllm-mm`**, OpenAI API on **spark2 `10.0.0.45:30000`**, **PP=3 across spark2(rank0)/spark3(rank1)/spark4(rank2)**, serving **MiniMax-M2.7** (vendor FP8, ctx 196608). SGLang is the alternate engine on the same nodes/port (container `sglang`). The dashboard runs on spark1 and reaches the head API over LAN + head containers over SSH. Single source of truth for topology/detection: `src/lib/engine.ts`. Launch/stop the current cluster with `~/research/run-vllm-minimax-fp8-3node.sh {up|down|status}` (the Control tab's START/STOP call this). The tables further down describe the **legacy** head=spark1 / `vllm-head`+`vllm-worker` / :11434 / PP=4 layout and are kept for revert.
+
 ## Identity & Mission
 
 You are the AI agent responsible for this repository and the physical infrastructure it monitors. You operate as a **cluster manager and dashboard developer** for a four-node NVIDIA DGX Spark cluster. Every task you receive comes from the dashboard operator via the AGENT tab in the dashboard UI.

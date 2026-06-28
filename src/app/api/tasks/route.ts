@@ -2,6 +2,7 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import { writeFileSync, existsSync } from "fs";
 import { NextResponse } from "next/server";
+import { NODE_LAN_IP } from "@/lib/engine";
 
 export const dynamic = "force-dynamic";
 
@@ -111,9 +112,9 @@ async function getNodeTasks(host?: string) {
 export async function GET() {
   const [spark1, spark2, spark3, spark4] = await Promise.all([
     getNodeTasks(),
-    getNodeTasks("spark2"),
-    getNodeTasks("spark3"),
-    getNodeTasks("spark4"),
+    getNodeTasks(NODE_LAN_IP.spark2),
+    getNodeTasks(NODE_LAN_IP.spark3),
+    getNodeTasks(NODE_LAN_IP.spark4),
   ]);
   return NextResponse.json({ ts: Date.now(), spark1, spark2, spark3, spark4 });
 }

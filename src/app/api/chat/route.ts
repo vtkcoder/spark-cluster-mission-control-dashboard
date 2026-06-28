@@ -26,8 +26,8 @@ export async function POST(req: NextRequest) {
     };
 
     const engine = await detectEngine();
-    const port = engine.port || 11434;
-    const upstream = await fetch(`http://localhost:${port}/v1/chat/completions`, {
+    const port = engine.port || 30000;
+    const upstream = await fetch(`http://${engine.apiHost}:${port}/v1/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),

@@ -104,7 +104,7 @@ export function VllmPanel({ data, engine, cacheHistory, reqHistory }: VllmPanelP
               <Row k="ENGINE" v={engine.label} color={accent} />
               <Row k="CONTEXT" v={`${data.maxModelLen?.toLocaleString() ?? "—"} tok`} color="#a78bfa" />
               <Row k="PARALLEL" v={engine.parallel} />
-              <Row k="NODES" v={engine.topology.includes("4") ? "4 (spark1–4)" : engine.topology} />
+              <Row k="NODES" v={engine.topology} />
               <Row k="KV DTYPE" v={engine.kvDtype} color="#22d3ee" />
               <Row k="PORT" v={String(engine.port || "—")} />
             </div>

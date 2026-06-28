@@ -2,7 +2,7 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import { writeFileSync, existsSync } from "fs";
 import { NextResponse } from "next/server";
-import { detectEngine, getEngineModels, getEngineMetrics, getSglangThroughput } from "@/lib/engine";
+import { detectEngine, getEngineModels, getEngineMetrics, getSglangThroughput, NODE_LAN_IP } from "@/lib/engine";
 
 export const dynamic = "force-dynamic";
 
@@ -172,12 +172,12 @@ function cacheKeyToModelId(key: string): string {
 export async function GET() {
   const NET_IFACE = "enP7s7"; // WAN interface
 
-  // Detect which inference engine is live (vLLM :11434 / SGLang :30000 / none)
+  // Detect which inference engine is live on the head node (spark2 :30000) — none if down.
   const engine = await detectEngine();
   const headSpec = engine.containers.find((c) => c.key === "head")!;
-  const wSpec  = engine.containers.find((c) => c.key === "worker")!;
-  const w2Spec = engine.containers.find((c) => c.key === "worker2")!;
-  const w3Spec = engine.containers.find((c) => c.key === "worker3")!;
+  const wSpec  = engine.containers.find((c) => c.key === "worker");
+  const w2Spec = engine.containers.find((c) => c.key === "worker2");
+  const w3Spec = engine.containers.find((c) => c.key === "worker3"); // absent on the 3-node PP=3 topology
 
   // Auto-discover all model dirs in the HF cache
   let cacheDirs: string[] = [];
@@ -212,20 +212,20 @@ export async function GET() {
     s2RxBytes,
   ] = await Promise.all([
     getNodeStats(),
-    getNodeStats("spark2"),
-    getNodeStats("spark3"),
-    getNodeStats("spark4"),
-    getEngineModels(engine.port),
-    getEngineMetrics(engine.port, engine.metricsPrefix),
+    getNodeStats(NODE_LAN_IP.spark2),
+    getNodeStats(NODE_LAN_IP.spark3),
+    getNodeStats(NODE_LAN_IP.spark4),
+    getEngineModels(engine.apiHost, engine.port),
+    getEngineMetrics(engine.apiHost, engine.port, engine.metricsPrefix),
     engine.type === "sglang" ? getSglangThroughput() : Promise.resolve(null),
     getDockerStatus(headSpec.name, headSpec.host),
-    getDockerStatus(wSpec.name, wSpec.host),
-    getDockerStatus(w2Spec.name, w2Spec.host),
-    getDockerStatus(w3Spec.name, w3Spec.host),
+    wSpec  ? getDockerStatus(wSpec.name, wSpec.host)   : Promise.resolve("absent"),
+    w2Spec ? getDockerStatus(w2Spec.name, w2Spec.host) : Promise.resolve("absent"),
+    w3Spec ? getDockerStatus(w3Spec.name, w3Spec.host) : Promise.resolve("absent"),
     getDockerStatus("open-webui"),
     getDockerUptime(headSpec.name, headSpec.host),
     getNetworkRx(NET_IFACE),
-    getNetworkRx(NET_IFACE, "spark2"),
+    getNetworkRx(NET_IFACE, NODE_LAN_IP.spark2),
   ]);
 
   // Network speed (bytes/sec since last poll) — applies to whichever model is active

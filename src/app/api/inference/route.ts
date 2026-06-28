@@ -6,10 +6,10 @@ export const dynamic = "force-dynamic";
 // Module-level state for delta throughput computation
 let prev: { ts: number; promptTokens: number; genTokens: number } | null = null;
 
-async function fetchMetrics(port: number, prefix: string): Promise<Record<string, number> | null> {
+async function fetchMetrics(host: string, port: number, prefix: string): Promise<Record<string, number> | null> {
   if (!port) return null;
   try {
-    const res = await fetch(`http://localhost:${port}/metrics`, {
+    const res = await fetch(`http://${host}:${port}/metrics`, {
       signal: AbortSignal.timeout(2000),
     });
     if (!res.ok) return null;
@@ -40,8 +40,8 @@ export async function GET() {
   const now = Date.now();
   const engine = await detectEngine();
   const [metrics, modelInfo, sgTokS] = await Promise.all([
-    fetchMetrics(engine.port, engine.metricsPrefix),
-    getEngineModels(engine.port),
+    fetchMetrics(engine.apiHost, engine.port, engine.metricsPrefix),
+    getEngineModels(engine.apiHost, engine.port),
     engine.type === "sglang" ? getSglangThroughput() : Promise.resolve(null),
   ]);
   const model = modelInfo?.model ?? null;

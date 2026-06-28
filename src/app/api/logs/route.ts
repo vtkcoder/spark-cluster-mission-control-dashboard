@@ -1,6 +1,7 @@
 import { exec } from "child_process";
 import { promisify } from "util";
 import { NextRequest, NextResponse } from "next/server";
+import { NODE_LAN_IP } from "@/lib/engine";
 
 export const dynamic = "force-dynamic";
 const execAsync = promisify(exec);
@@ -9,15 +10,15 @@ function stripAnsi(s: string): string {
   return s.replace(/\x1B\[[0-9;]*[mGKHFJ]/g, "");
 }
 
+// Head node is spark2 — every cluster container is reached via SSH from the
+// dashboard host (spark1). Container names: vLLM=`vllm-mm`, SGLang=`sglang`.
 const SOURCES: Record<string, { type: "docker-local" | "docker-ssh" | "pm2"; target: string; host?: string }> = {
-  "vllm-head":    { type: "docker-local", target: "vllm-head" },
-  "vllm-worker":  { type: "docker-ssh",   target: "vllm-worker", host: "spark2" },
-  "vllm-worker2": { type: "docker-ssh",   target: "vllm-worker", host: "spark3" },
-  "vllm-worker3": { type: "docker-ssh",   target: "vllm-worker", host: "spark4" },
-  "sglang-head":  { type: "docker-local", target: "sglang" },
-  "sglang-rank1": { type: "docker-ssh",   target: "sglang", host: "spark2" },
-  "sglang-rank2": { type: "docker-ssh",   target: "sglang", host: "spark3" },
-  "sglang-rank3": { type: "docker-ssh",   target: "sglang", host: "spark4" },
+  "vllm-head":    { type: "docker-ssh",   target: "vllm-mm", host: NODE_LAN_IP.spark2 },
+  "vllm-worker":  { type: "docker-ssh",   target: "vllm-mm", host: NODE_LAN_IP.spark3 },
+  "vllm-worker2": { type: "docker-ssh",   target: "vllm-mm", host: NODE_LAN_IP.spark4 },
+  "sglang-head":  { type: "docker-ssh",   target: "sglang", host: NODE_LAN_IP.spark2 },
+  "sglang-rank1": { type: "docker-ssh",   target: "sglang", host: NODE_LAN_IP.spark3 },
+  "sglang-rank2": { type: "docker-ssh",   target: "sglang", host: NODE_LAN_IP.spark4 },
   "open-webui":   { type: "docker-local", target: "open-webui" },
 };
 

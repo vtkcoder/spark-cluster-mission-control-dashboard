@@ -3,12 +3,18 @@ import { promisify } from "util";
 import { readdirSync, existsSync, statSync } from "fs";
 import { join } from "path";
 import { NextRequest, NextResponse } from "next/server";
+import { NODE_LAN_IP } from "@/lib/engine";
 
 export const dynamic = "force-dynamic";
 const execAsync = promisify(exec);
 
 const HF_CACHE = "/home/absolome/.cache/huggingface/hub";
 const VLLM_IMAGE = "nvcr.io/nvidia/vllm:26.04-py3";
+
+// Current cluster (head=spark2, PP=3 across spark2/3/4) is launched/stopped by this
+// known-good script — `up` brings MiniMax-M2.7 FP8 online, `down` removes `vllm-mm`
+// on all three nodes. The legacy TP=2 head=spark1 builders below are preserved for revert.
+const CLUSTER_SCRIPT = "/home/absolome/research/run-vllm-minimax-fp8-3node.sh";
 
 // ── Per-model defaults for known models ───────────────────────────────────────
 // Auto-discovery surfaces any model in the HF cache; this table provides the
@@ -201,21 +207,33 @@ export async function POST(req: NextRequest) {
     };
 
     if (body.action === "vllm-stop") {
-      const [headRes, workerRes] = await Promise.allSettled([
-        execAsync("docker rm -f vllm-head 2>&1 || true", { timeout: 20000 }),
-        execAsync("ssh -o ConnectTimeout=5 -o BatchMode=yes spark2 'docker rm -f vllm-worker 2>&1 || true'", { timeout: 20000 }),
-      ]);
-      const headOk = headRes.status === "fulfilled";
-      const workerOk = workerRes.status === "fulfilled";
-      const headOut = headOk ? (headRes.value as { stdout: string }).stdout.trim() : (headRes.reason as Error).message;
-      const workerOut = workerOk ? (workerRes.value as { stdout: string }).stdout.trim() : (workerRes.reason as Error).message;
-      if (!headOk && !workerOk) {
-        return NextResponse.json({ ok: false, error: `head: ${headOut} | worker: ${workerOut}` }, { status: 500 });
+      // Current cluster: remove `vllm-mm` on spark2/3/4 via the script's `down`.
+      try {
+        const { stdout } = await execAsync(`bash ${CLUSTER_SCRIPT} down 2>&1`, { timeout: 60000 });
+        return NextResponse.json({ ok: true, message: `Cluster stopped (vllm-mm removed on spark2/3/4).\n${stdout.trim()}` });
+      } catch (e) {
+        return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 500 });
       }
-      return NextResponse.json({ ok: true, message: `Cluster stopped. head=${headOk ? "removed" : "FAILED: " + headOut}, worker=${workerOk ? "removed" : "FAILED: " + workerOut}` });
     }
 
     if (body.action === "vllm-start") {
+      // Current cluster is fixed to MiniMax-M2.7 FP8 PP=3 (the proven config). The
+      // model selector / sliders apply to the legacy single-head flow only.
+      try {
+        const { stdout } = await execAsync(`bash ${CLUSTER_SCRIPT} up 2>&1`, { timeout: 90000 });
+        return NextResponse.json({
+          ok: true,
+          message: `Cluster launching: MiniMax-M2.7 FP8 · PP=3 · spark2/3/4. Weight load ~10–12 min — watch Overview / vLLM logs.\n${stdout.trim()}`,
+        });
+      } catch (e) {
+        return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 500 });
+      }
+    }
+
+    // LEGACY (revert-only): TP=2 head=spark1 :11434 launcher with model selector.
+    // Not used by the current dashboard buttons; kept so the old single-head flow
+    // is recoverable. Builders: buildHeadCmd / buildWorkerCmd / buildVllmServeArgs.
+    if (body.action === "legacy-vllm-start") {
       const model = body.model;
       if (!model) return NextResponse.json({ ok: false, error: "model required" }, { status: 400 });
 
@@ -243,7 +261,7 @@ export async function POST(req: NextRequest) {
 
       await Promise.allSettled([
         execAsync("docker rm -f vllm-head 2>/dev/null; true", { timeout: 15000 }),
-        execAsync("ssh -o ConnectTimeout=5 -o BatchMode=yes spark2 'docker rm -f vllm-worker 2>/dev/null; true'", { timeout: 15000 }),
+        execAsync(`ssh -o ConnectTimeout=5 -o BatchMode=yes ${NODE_LAN_IP.spark2} 'docker rm -f vllm-worker 2>/dev/null; true'`, { timeout: 15000 }),
       ]);
 
       const headCmd = buildHeadCmd(model, maxLen, gpuUtil, modelCfg);
@@ -251,7 +269,7 @@ export async function POST(req: NextRequest) {
 
       const [headResult, workerResult] = await Promise.allSettled([
         execAsync(headCmd, { timeout: 30000 }),
-        execAsync(`ssh -o ConnectTimeout=10 -o BatchMode=yes spark2 '${workerCmd}'`, { timeout: 30000 }),
+        execAsync(`ssh -o ConnectTimeout=10 -o BatchMode=yes ${NODE_LAN_IP.spark2} '${workerCmd}'`, { timeout: 30000 }),
       ]);
 
       const headOk = headResult.status === "fulfilled";
