@@ -1,4 +1,8 @@
-// HF cache scanner for the Model Manager. Pure helpers + scanModels() (Task 4).
+// HF cache scanner for the Model Manager. Pure helpers + scanModels().
+import { readdirSync, existsSync, readFileSync, statSync } from "fs";
+import { join } from "path";
+import { execSync } from "child_process";
+
 export const HF_CACHE = "/home/absolome/.cache/huggingface/hub";
 
 export type Modality = "text" | "vision" | "audio" | "image-gen" | "unknown";
@@ -93,4 +97,179 @@ export function parseFacts(c: ConfigFiles): ModelFacts {
     for (const [re, label] of QUANT_NAME_PATTERNS) if (re.test(c.nameHint)) { quant = label; break; }
   }
   return { arch, modelType, contextLen, quant, dtype };
+}
+
+export type Health = "ready" | "downloading" | "incomplete" | "stub" | "broken";
+
+export interface ScannedModel {
+  node: string;
+  id: string;
+  org: string;
+  name: string;
+  sizeBytes: number;
+  modality: Modality;
+  arch: string | null;
+  modelType: string | null;
+  paramCountB: number | null;
+  quant: string | null;
+  contextLen: number | null;
+  dtype: string | null;
+  health: Health;
+  healthDetail: string;
+  snapshotHash: string | null;
+  mtime: number;
+  groupKey: string;
+  served: boolean;
+}
+
+const STUB_MAX_BYTES = 50 * 1024 * 1024; // <50MB with a config = weights missing
+
+function readJson(path: string): Record<string, unknown> | null {
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function resolveSnapshotDir(dir: string): { snapDir: string | null; hash: string | null } {
+  const snapshotsRoot = join(dir, "snapshots");
+  if (!existsSync(snapshotsRoot)) return { snapDir: null, hash: null };
+  // Prefer the hash named in refs/main.
+  const refPath = join(dir, "refs", "main");
+  let hash: string | null = null;
+  try {
+    hash = readFileSync(refPath, "utf8").trim() || null;
+  } catch { /* no ref */ }
+  if (hash && existsSync(join(snapshotsRoot, hash))) return { snapDir: join(snapshotsRoot, hash), hash };
+  // Fallback: newest snapshot subdir.
+  try {
+    const subs = readdirSync(snapshotsRoot)
+      .map((s) => ({ s, t: statSync(join(snapshotsRoot, s)).mtimeMs }))
+      .sort((a, b) => b.t - a.t);
+    if (subs.length) return { snapDir: join(snapshotsRoot, subs[0].s), hash: subs[0].s };
+  } catch { /* none */ }
+  return { snapDir: null, hash };
+}
+
+function dirBytes(path: string): number {
+  try {
+    const out = execSync(`du -sb '${path}' 2>/dev/null`, { timeout: 30000 }).toString();
+    return parseInt(out.split("\t")[0]) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function blobHealth(dir: string): { incomplete: number; complete: number } {
+  const blobsDir = join(dir, "blobs");
+  if (!existsSync(blobsDir)) return { incomplete: 0, complete: 0 };
+  let incomplete = 0, complete = 0;
+  for (const f of readdirSync(blobsDir)) {
+    if (f.endsWith(".incomplete")) {
+      try { if (statSync(join(blobsDir, f)).size > 0) incomplete++; } catch { /* skip */ }
+    } else complete++;
+  }
+  return { incomplete, complete };
+}
+
+export function scanModels(cacheRoot: string = HF_CACHE, node = "spark1"): ScannedModel[] {
+  let dirs: string[] = [];
+  try {
+    dirs = readdirSync(cacheRoot).filter((d) => d.startsWith("models--"));
+  } catch {
+    return [];
+  }
+
+  return dirs.map((cacheKey) => {
+    const id = cacheKeyToModelId(cacheKey);
+    const dir = join(cacheRoot, cacheKey);
+    const name = shortName(id);
+    const org = id.includes("/") ? id.split("/")[0] : "";
+    const { snapDir, hash } = resolveSnapshotDir(dir);
+
+    const cfgFiles: ConfigFiles = { nameHint: name };
+    if (snapDir) {
+      cfgFiles.config = readJson(join(snapDir, "config.json"));
+      cfgFiles.generation = readJson(join(snapDir, "generation_config.json"));
+      cfgFiles.preprocessor = readJson(join(snapDir, "preprocessor_config.json"));
+      cfgFiles.processor = readJson(join(snapDir, "processor_config.json"));
+      cfgFiles.modelIndex = readJson(join(snapDir, "model_index.json"));
+    }
+
+    const facts = parseFacts(cfgFiles);
+    const modality = classifyModality(cfgFiles);
+    const sizeBytes = dirBytes(dir);
+    const { incomplete, complete } = blobHealth(dir);
+    const hasConfig = !!cfgFiles.config || !!cfgFiles.modelIndex;
+
+    let health: Health;
+    let healthDetail: string;
+    if (incomplete > 0) {
+      health = "downloading";
+      healthDetail = `${incomplete} blob(s) still downloading`;
+    } else if (hasConfig && sizeBytes < STUB_MAX_BYTES) {
+      health = "stub";
+      healthDetail = "config present but weights missing";
+    } else if (complete === 0 && !hasConfig) {
+      health = "incomplete";
+      healthDetail = "no complete blobs and no config";
+    } else if (!snapDir) {
+      health = "broken";
+      healthDetail = "no resolvable snapshot";
+    } else {
+      health = "ready";
+      healthDetail = "complete";
+    }
+
+    let mtime = 0;
+    try { mtime = statSync(dir).mtimeMs; } catch { /* keep 0 */ }
+
+    // Approx param count (billions) from total size: bytes/bytesPerParam.
+    // FP8/FP4≈1 byte, BF16≈2. Heuristic only; null when size unknown.
+    let paramCountB: number | null = null;
+    if (sizeBytes > 0 && health === "ready") {
+      const bpp = facts.quant && /FP4|NVFP4|MXFP4/.test(facts.quant) ? 0.5
+        : facts.quant === "FP8" ? 1
+        : facts.dtype && /16/.test(facts.dtype) ? 2 : 1;
+      paramCountB = Math.round((sizeBytes / bpp / 1e9) * 10) / 10;
+    }
+
+    return {
+      node, id, org, name, sizeBytes, modality,
+      arch: facts.arch, modelType: facts.modelType, paramCountB,
+      quant: facts.quant, contextLen: facts.contextLen, dtype: facts.dtype,
+      health, healthDetail, snapshotHash: hash, mtime,
+      groupKey: normalizeBaseKey(id), served: false,
+    };
+  });
+}
+
+export interface ModelGroup {
+  key: string;
+  members: ScannedModel[];
+  totalBytes: number;
+  redundantBytes: number;
+  unique: boolean;
+}
+
+export function groupDuplicates(models: ScannedModel[]): ModelGroup[] {
+  const byKey = new Map<string, ScannedModel[]>();
+  for (const m of models) {
+    const arr = byKey.get(m.groupKey) ?? [];
+    arr.push(m);
+    byKey.set(m.groupKey, arr);
+  }
+  const groups: ModelGroup[] = [];
+  for (const [key, members] of byKey) {
+    const totalBytes = members.reduce((s, m) => s + m.sizeBytes, 0);
+    const largest = members.reduce((mx, m) => Math.max(mx, m.sizeBytes), 0);
+    groups.push({
+      key, members,
+      totalBytes,
+      redundantBytes: members.length > 1 ? totalBytes - largest : 0,
+      unique: members.length === 1,
+    });
+  }
+  return groups.sort((a, b) => b.totalBytes - a.totalBytes);
 }
