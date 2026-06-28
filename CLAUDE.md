@@ -168,6 +168,17 @@ Accent colors: `#10b981` (green/ready), `#3b82f6` (blue/selected), `#8b5cf6` (pu
 Font sizes: 9–11px for labels, 14px for headers. Monospace via `fontFamily: "inherit"`.
 All styling is inline (no Tailwind classes except globals).
 
+### Model Manager (MODELS tab)
+
+Scans spark1's HF cache (`/home/absolome/.cache/huggingface/hub`) and manages models.
+- API: `src/app/api/models/{route,usage,meta,delete,backup}/route.ts`
+- Libs: `src/lib/{db,model-scan,model-usage,model-backup,model-types}.ts`
+- UI: `src/components/ModelManagerPanel.tsx` + `src/components/models/*`
+- Metadata store: Postgres DB `cluster_dash` (tables `model_meta`, `model_comment`, `model_event`). Connection via `DATABASE_URL` in `.env.local` (default socket conn to local PG as `absolome`). Schema auto-bootstraps via `ensureSchema()`.
+- Features: rich facts, health/integrity, duplicate-variant grouping, disk treemap, tags/notes/rating/comments, usage investigation (engine/scripts/configs), external-drive backup (rsync), guarded delete (typed-name confirm, served + backup locks, path-safety).
+- Tests: `npx vitest run` (pure helpers + Postgres/fs integration). Vitest is the only test tooling in the repo.
+- v1 = spark1 only; lib functions take a `node` arg for the v2 multi-node extension (rows keyed by `(node, model_id)`).
+
 ---
 
 ## Workflow Rules — ALWAYS follow these
