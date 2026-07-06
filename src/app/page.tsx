@@ -13,6 +13,7 @@ import { AgentPanel } from "@/components/AgentPanel";
 import { InferencePanel } from "@/components/InferencePanel";
 import { BackupPanel } from "@/components/BackupPanel";
 import { ModelManagerPanel } from "@/components/ModelManagerPanel";
+import { BenchmarksPanel } from "@/components/BenchmarksPanel";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface GpuData {
@@ -119,7 +120,7 @@ export default function DashPage() {
   });
   const [tasksData, setTasksData] = useState<TasksData | null>(null);
   const [tasksLoading, setTasksLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<"overview" | "inference" | "tasks" | "control" | "models" | "backup" | "pm2" | "logs" | "chat" | "agent">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "inference" | "tasks" | "control" | "models" | "benchmarks" | "backup" | "pm2" | "logs" | "chat" | "agent">("overview");
   const tasksHasData = useRef(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -368,26 +369,29 @@ export default function DashPage() {
           padding: "0 20px",
         }}
       >
-        {(["overview", "inference", "tasks", "control", "models", "backup", "pm2", "logs", "chat", "agent"] as const)
+        {(["overview", "inference", "tasks", "control", "models", "benchmarks", "backup", "pm2", "logs", "chat", "agent"] as const)
           .filter((tab) => !(singleNodeMode && (tab === "tasks" || tab === "control")))
           .map((tab) => {
-          const labels: Record<string, string> = { overview: singleNodeMode ? "DASHBOARD" : "OVERVIEW", inference: "INFERENCE", tasks: "SYSTEM TASKS", control: "CLUSTER CONTROL", models: "◆ MODELS", backup: "◇ BACKUP", pm2: "PM2", logs: "LOGS", chat: "CHAT", agent: "◈ AGENT" };
+          const labels: Record<string, string> = { overview: singleNodeMode ? "DASHBOARD" : "OVERVIEW", inference: "INFERENCE", tasks: "SYSTEM TASKS", control: "CLUSTER CONTROL", models: "◆ MODELS", benchmarks: "⏱ BENCHMARKS", backup: "◇ BACKUP", pm2: "PM2", logs: "LOGS", chat: "CHAT", agent: "◈ AGENT" };
           const active = activeTab === tab;
           const accentColor =
             tab === "agent" ? "#8b5cf6"
             : tab === "inference" ? "#06b6d4"
+            : tab === "benchmarks" ? "#eab308"
             : tab === "backup" ? "#f59e0b"
             : tab === "models" ? "#14b8a6"
             : "#3b82f6";
           const activeText =
             tab === "agent" ? "#a78bfa"
             : tab === "inference" ? "#22d3ee"
+            : tab === "benchmarks" ? "#facc15"
             : tab === "backup" ? "#fbbf24"
             : tab === "models" ? "#2dd4bf"
             : "#3b82f6";
           const inactiveText =
             tab === "agent" ? "#5b3f8a"
             : tab === "inference" ? "#0f4a5a"
+            : tab === "benchmarks" ? "#713f12"
             : tab === "backup" ? "#5b4520"
             : tab === "models" ? "#155e57"
             : "#334155";
@@ -570,6 +574,16 @@ export default function DashPage() {
               ▸ MODEL MANAGER · spark1 · {data?.engine?.label && data.engine.type !== "none" ? `served by ${data.engine.label}` : "scan & manage downloaded models"}
             </div>
             <ModelManagerPanel />
+          </section>
+        )}
+
+        {/* ── BENCHMARKS TAB ── */}
+        {activeTab === "benchmarks" && (
+          <section>
+            <div style={{ fontSize: 9, color: "#334155", letterSpacing: "0.14em", marginBottom: 8, textTransform: "uppercase" }}>
+              ▸ BENCHMARKS · llama-benchy{data?.engine?.label && data.engine.type !== "none" ? ` · TARGET ${data.engine.label} :${data.engine.port}` : " · no live engine"}
+            </div>
+            <BenchmarksPanel />
           </section>
         )}
 
