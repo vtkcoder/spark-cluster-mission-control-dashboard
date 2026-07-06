@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { scanAllModels, groupDuplicates } from "@/lib/model-scan";
 import { getMetaMap, type ModelMeta } from "@/lib/db";
-import { detectEngine, getEngineModels, HEAD_HOST, API_PORT } from "@/lib/engine";
+import { detectEngine, getEngineModels } from "@/lib/engine";
 import type { ModelsResponse, ModelWithMeta } from "@/lib/model-types";
 
 export const dynamic = "force-dynamic";
@@ -44,6 +44,6 @@ export async function GET() {
 async function detectServed(): Promise<string | null> {
   const eng = await detectEngine();
   if (eng.type === "none") return null;
-  const m = await getEngineModels(HEAD_HOST, API_PORT);
+  const m = await getEngineModels(eng.apiHost, eng.port);
   return m?.model ?? null;
 }

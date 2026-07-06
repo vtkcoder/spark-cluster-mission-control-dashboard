@@ -3,7 +3,7 @@ import { existsSync } from "fs";
 import { exec } from "child_process";
 import { promisify } from "util";
 import { findModelDir, validateDeletePath, shortName } from "@/lib/model-scan";
-import { detectEngine, getEngineModels, HEAD_HOST, API_PORT } from "@/lib/engine";
+import { detectEngine, getEngineModels } from "@/lib/engine";
 import { logEvent, updateEvent } from "@/lib/db";
 import { backupInFlightFor } from "@/lib/model-backup";
 
@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
     try {
       const eng = await detectEngine();
       if (eng.type !== "none") {
-        const served = await getEngineModels(HEAD_HOST, API_PORT);
+        const served = await getEngineModels(eng.apiHost, eng.port);
         if (served && (served.model === modelId || served.model.split("/").pop() === name)) {
           return NextResponse.json({ error: "Refusing: this model is currently being served. Stop the engine first." }, { status: 409 });
         }

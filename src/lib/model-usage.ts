@@ -1,6 +1,6 @@
 import { execSync } from "child_process";
 import { shortName } from "./model-scan";
-import { detectEngine, getEngineModels, HEAD_HOST, API_PORT } from "./engine";
+import { detectEngine, getEngineModels } from "./engine";
 
 export interface UsageHit {
   source: "engine" | "script" | "config";
@@ -65,11 +65,11 @@ export async function investigateUsage(modelId: string, _node = "spark1"): Promi
   try {
     const eng = await detectEngine();
     if (eng.type !== "none") {
-      const served = await getEngineModels(HEAD_HOST, API_PORT);
+      const served = await getEngineModels(eng.apiHost, eng.port);
       if (served && (served.model === modelId || served.model.split("/").pop() === name)) {
         hits.push({
           source: "engine",
-          path: `${eng.label} @ ${HEAD_HOST}:${API_PORT}`,
+          path: `${eng.label} @ ${eng.apiHost}:${eng.port}`,
           line: null,
           excerpt: `Currently served by the live ${eng.label} cluster (${eng.parallel})`,
         });

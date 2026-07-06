@@ -217,7 +217,7 @@ export async function GET() {
     getNodeStats(NODE_LAN_IP.spark4),
     getEngineModels(engine.apiHost, engine.port),
     getEngineMetrics(engine.apiHost, engine.port, engine.metricsPrefix),
-    engine.type === "sglang" ? getSglangThroughput() : Promise.resolve(null),
+    engine.type === "sglang" ? getSglangThroughput(headSpec.name, headSpec.host) : Promise.resolve(null),
     getDockerStatus(headSpec.name, headSpec.host),
     wSpec  ? getDockerStatus(wSpec.name, wSpec.host)   : Promise.resolve("absent"),
     w2Spec ? getDockerStatus(w2Spec.name, w2Spec.host) : Promise.resolve("absent"),
