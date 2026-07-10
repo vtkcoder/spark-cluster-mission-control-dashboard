@@ -1,6 +1,25 @@
 # Spark Cluster Mission Control — Claude Code Agent
 
-> **⚡ CURRENT CONFIG (2026-06-10) — read first.** The inference cluster head moved to **spark2**. spark1 was freed as a dev box / NFS weight server and is **no longer an inference node** (still monitored). Active engine: **vLLM**, container **`vllm-mm`**, OpenAI API on **spark2 `10.0.0.45:30000`**, **PP=3 across spark2(rank0)/spark3(rank1)/spark4(rank2)**, serving **MiniMax-M2.7** (vendor FP8, ctx 196608). SGLang is the alternate engine on the same nodes/port (container `sglang`). The dashboard runs on spark1 and reaches the head API over LAN + head containers over SSH. Single source of truth for topology/detection: `src/lib/engine.ts`. Launch/stop the current cluster with `~/research/run-vllm-minimax-fp8-3node.sh {up|down|status}` (the Control tab's START/STOP call this). The tables further down describe the **legacy** head=spark1 / `vllm-head`+`vllm-worker` / :11434 / PP=4 layout and are kept for revert.
+> **⚡ CURRENT CONFIG (2026-07-06) — read first.** Detection is now **AUTO** — `src/lib/engine.ts`
+> no longer hardcodes a topology. `detectEngine()` discovers the live cluster at request time:
+> scans every fleet node's `docker ps` for a running vLLM/SGLang container, reads the real serve
+> command from inside it (`/proc/*/cmdline` — the container runs `sleep infinity`, vLLM is a
+> `docker exec`) to learn the API port + TP/PP + node count, then probes `/v1/models` to confirm the
+> head. **So you normally do NOT edit `engine.ts` when the model/topology/port changes — the
+> dashboard adapts.** Candidate API ports are env-overridable via `CLUSTER_DASH_API_PORTS`
+> (default `8001,8000,30000,11434`); fleet nodes are `FLEET` in engine.ts.
+>
+> **What's live now:** engine **vLLM**, container **`vllm_node`**, head = **spark1 (local)** + worker =
+> **spark2**, **TP=2**, OpenAI API on **spark1 `10.0.0.223:8001`** (= localhost:8001; **port 8001**, not
+> 8000 — 8000 is the restic rest-server), serving **`deepseek-ai/DeepSeek-V4-Flash`** over a direct
+> CX7 RoCE cable (`enp1s0f0np0`/`rocep1s0f0`, `192.168.100.10/.11`). The dashboard runs on spark1,
+> reaches the API over LAN and containers over SSH. **Launch/stop is NOT via the old
+> `~/research/run-vllm-*` scripts** — it's the spark-arena tooling:
+> `cd ~/spark-arena/spark-vllm-docker && ./run-recipe.sh deepseek-v4-flash --no-ray --port 8001`.
+> **Full model runbook: `~/research/deepseek-v4-flash-2node-runbook.md`** (also logged in
+> `~/server-board.md` 2026-07-06). Prior shapes (spark2 `vllm-mm`/`sglang` :30000 PP=3 MiniMax; legacy
+> spark1 `vllm-head`+`vllm-worker` :11434 PP=4 — tables further down) still work via auto-detect and
+> are historical reference.
 
 ## Identity & Mission
 
