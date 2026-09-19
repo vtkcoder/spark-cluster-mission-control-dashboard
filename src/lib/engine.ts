@@ -52,20 +52,42 @@ export const NODE_LAN_IP = {
   spark4: "10.0.0.66",
 } as const;
 
+function envStr(k: string): string | undefined {
+  const v = process.env[k]?.trim();
+  return v ? v : undefined;
+}
+
 export const NODE_SSH_HOST = {
-  spark2: NODE_LAN_IP.spark2,
-  spark3: NODE_LAN_IP.spark3,
+  spark2: envStr("CLUSTER_DASH_SSH_SPARK2") ?? NODE_LAN_IP.spark2,
+  spark3: envStr("CLUSTER_DASH_SSH_SPARK3") ?? NODE_LAN_IP.spark3,
   // spark4 currently shares 10.0.0.66 with another LAN device, so SSH to the
   // LAN IPv4 is nondeterministic. Its IPv6 link-local address is stable for the
-  // NIC MAC and reaches the real Spark directly.
-  spark4: "fe80::bdc7:47ee:6b36:a9cc%enP7s7",
-} as const;
+  // NIC MAC and reaches the real Spark directly. The %zone is the LOCAL egress
+  // interface, so it differs per dashboard host — override via env off-spark1
+  // (e.g. CLUSTER_DASH_SSH_SPARK4="fe80::bdc7:47ee:6b36:a9cc%en1" on the Mac).
+  spark4: envStr("CLUSTER_DASH_SSH_SPARK4") ?? "fe80::bdc7:47ee:6b36:a9cc%enP7s7",
+};
+
+// ── Remote-spark1 mode ────────────────────────────────────────────────────────
+// Historically the dashboard ran ON spark1, so "no ssh host" meant "spark1".
+// Set CLUSTER_DASH_SPARK1_SSH (e.g. "absolome@edgexpert-74a6.local") to run the
+// dashboard on another machine: every spark1-state command is then wrapped in
+// ssh, and CLUSTER_DASH_SPARK1_API (default: the host part of the ssh target)
+// replaces localhost as spark1's API address. Unset = exact legacy behavior.
+export const SPARK1_HOST = envStr("CLUSTER_DASH_SPARK1_SSH");
+export const SPARK1_API =
+  envStr("CLUSTER_DASH_SPARK1_API") ?? (SPARK1_HOST ? SPARK1_HOST.replace(/^.*@/, "") : "localhost");
+// pm2/claude on spark1 live under ~/.npm-global and ~/.local — neither is on
+// the non-interactive sshd PATH, so remote invocations need absolute paths.
+export const SPARK1_PM2 = SPARK1_HOST
+  ? (envStr("CLUSTER_DASH_SPARK1_PM2") ?? "/home/absolome/.npm-global/bin/pm2")
+  : "pm2";
 
 type NodeKey = "spark1" | "spark2" | "spark3" | "spark4";
 interface FleetNode { key: NodeKey; host?: string; apiHost: string }
 
 const FLEET: FleetNode[] = [
-  { key: "spark1", host: undefined,          apiHost: "localhost" },
+  { key: "spark1", host: SPARK1_HOST,          apiHost: SPARK1_API },
   { key: "spark2", host: NODE_SSH_HOST.spark2, apiHost: NODE_LAN_IP.spark2 },
   { key: "spark3", host: NODE_SSH_HOST.spark3, apiHost: NODE_LAN_IP.spark3 },
   { key: "spark4", host: NODE_SSH_HOST.spark4, apiHost: NODE_LAN_IP.spark4 },
@@ -90,11 +112,27 @@ function sshPrefix(host: string, connectTimeout = 3): string {
   const isLinkLocalV6 = host.includes("%");
   const addr = JSON.stringify(isLinkLocalV6 ? `absolome@${host}` : host);
   const alias = host === NODE_SSH_HOST.spark4 ? " -o HostKeyAlias=spark4 -6" : "";
-  return `ssh -o ConnectTimeout=${connectTimeout} -o BatchMode=yes${alias} ${addr}`;
+  // accept-new: first contact from a fresh dashboard host must not park on a
+  // host-key prompt (BatchMode has nobody to answer it); a CHANGED key still fails.
+  return `ssh -o ConnectTimeout=${connectTimeout} -o BatchMode=yes -o StrictHostKeyChecking=accept-new${alias} ${addr}`;
 }
 
 export function sshCommand(inner: string, host: string, connectTimeout = 3): string {
   return `${sshPrefix(host, connectTimeout)} ${JSON.stringify(inner)}`;
+}
+
+/** Wrap a spark1-state command: ssh'd in remote-spark1 mode, verbatim when the dashboard runs on spark1. */
+export function spark1Cmd(inner: string, connectTimeout = 3): string {
+  return SPARK1_HOST ? sshCommand(inner, SPARK1_HOST, connectTimeout) : inner;
+}
+
+/** argv for spawn()ing a long-lived spark1-state process (rsync, restic job, claude agent). */
+export function spark1SpawnArgs(inner: string): { cmd: string; args: string[] } {
+  if (!SPARK1_HOST) return { cmd: "bash", args: ["-c", inner] };
+  return {
+    cmd: "ssh",
+    args: ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-tt", SPARK1_HOST, inner],
+  };
 }
 
 // ── Low-level helpers ─────────────────────────────────────────────────────────

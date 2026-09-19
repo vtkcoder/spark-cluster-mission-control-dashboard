@@ -3,7 +3,7 @@ import { existsSync } from "fs";
 import { exec } from "child_process";
 import { promisify } from "util";
 import { findModelDir, validateDeletePath, shortName } from "@/lib/model-scan";
-import { detectEngine, getEngineModels } from "@/lib/engine";
+import { detectEngine, getEngineModels, spark1Cmd } from "@/lib/engine";
 import { logEvent, updateEvent } from "@/lib/db";
 import { backupInFlightFor } from "@/lib/model-backup";
 
@@ -44,16 +44,21 @@ export async function POST(req: NextRequest) {
     }
     if (!existsSync(dir)) return NextResponse.json({ error: "Model dir not found." }, { status: 404 });
 
-    // 5) Measure, log, delete, confirm.
+    // 5) Measure, log, delete, confirm. Model storage physically lives on spark1:
+    // in remote-spark1 mode the local view is a read-only NFS mount, so both the
+    // measurement and the rm run on spark1 (same absolute path on both sides).
     let sizeBytes = 0;
     try {
-      const { stdout } = await execAsync(`du -sb '${dir}' 2>/dev/null`, { timeout: 30000 });
+      const { stdout } = await execAsync(spark1Cmd(`du -sb '${dir}' 2>/dev/null`), { timeout: 30000 });
       sizeBytes = parseInt(stdout.split("\t")[0]) || 0;
     } catch { /* size best-effort */ }
 
     eventId = await logEvent(NODE, modelId, "delete", "started", { path: dir, sizeBytes });
-    await execAsync(`rm -rf '${dir}'`, { timeout: 120000 });
-    if (existsSync(dir)) throw new Error("Directory still present after rm");
+    await execAsync(spark1Cmd(`rm -rf '${dir}'`), { timeout: 120000 });
+    // Verify on spark1 itself — the NFS attribute cache can briefly report a
+    // just-deleted dir as still present.
+    const { stdout: still } = await execAsync(spark1Cmd(`test -d '${dir}' && echo yes || echo no`), { timeout: 10000 });
+    if (still.trim() === "yes") throw new Error("Directory still present after rm");
     await updateEvent(eventId, "success", { path: dir, freedBytes: sizeBytes });
 
     return NextResponse.json({ ok: true, freedBytes: sizeBytes });

@@ -1,11 +1,18 @@
 import { spawn, ChildProcess } from "child_process";
 import { NextRequest, NextResponse } from "next/server";
+import { spark1SpawnArgs } from "@/lib/engine";
 
 export const dynamic = "force-dynamic";
 
-const CLAUDE_BIN = "/home/absolome/.npm-global/bin/claude";
+// claude moved from ~/.npm-global to ~/.local/bin on spark1 (verified 2026-09-18).
+// Agent jobs always run ON spark1 — via ssh in remote-spark1 mode.
+const CLAUDE_BIN = process.env.CLUSTER_DASH_CLAUDE_BIN ?? "/home/absolome/.local/bin/claude";
 const WORK_DIR = "/home/absolome/sites/cluster-dash";
 const MAX_LOG_CHARS = 120_000;
+
+function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
 
 // ── Persistent job state (module-level — PM2 keeps this process alive) ────────
 interface AgentJob {
@@ -137,20 +144,17 @@ export async function POST(req: NextRequest) {
   };
 
   try {
-    child = spawn(
-      CLAUDE_BIN,
-      ["--dangerously-skip-permissions", "--verbose", "--output-format", "stream-json", "-p", task],
-      {
-        cwd: WORK_DIR,
-        env: {
-          ...process.env,
-          HOME: "/home/absolome",
-          PATH: `/home/absolome/.npm-global/bin:/home/absolome/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
-          TERM: "xterm-256color",
-        },
-        stdio: ["ignore", "pipe", "pipe"],
-      }
-    );
+    // One shell string so local and remote-spark1 modes share a code path:
+    // spark1SpawnArgs runs it via `bash -c` locally or `ssh -tt spark1` remotely
+    // (-tt so killing the ssh client reliably terminates the remote claude).
+    const inner =
+      `cd ${WORK_DIR} && ` +
+      `HOME=/home/absolome ` +
+      `PATH=/home/absolome/.npm-global/bin:/home/absolome/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin ` +
+      `TERM=xterm-256color ` +
+      `${CLAUDE_BIN} --dangerously-skip-permissions --verbose --output-format stream-json -p ${shellQuote(task)}`;
+    const sp = spark1SpawnArgs(inner);
+    child = spawn(sp.cmd, sp.args, { stdio: ["ignore", "pipe", "pipe"] });
 
     currentJob.pid = child.pid ?? null;
 

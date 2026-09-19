@@ -1,7 +1,8 @@
 import { spawn, execSync } from "child_process";
-import { existsSync, mkdirSync } from "fs";
+import { existsSync } from "fs";
 import { join } from "path";
 import { findModelDir, idToSafeName } from "./model-scan";
+import { spark1Cmd, spark1SpawnArgs } from "./engine";
 import { logEvent, updateEvent } from "./db";
 
 export interface BackupTarget { mountpoint: string; label: string; freeBytes: number }
@@ -33,9 +34,10 @@ export function parseRsyncProgress(line: string): number | null {
 }
 
 export async function detectTargets(): Promise<BackupTarget[]> {
+  // The external backup drive hangs off spark1 — detect it there in remote mode.
   let json: { blockdevices?: unknown[] } = {};
   try {
-    const out = execSync("lsblk -J -b -o NAME,MOUNTPOINT,SIZE,FSAVAIL,RM,TYPE 2>/dev/null").toString();
+    const out = execSync(spark1Cmd("lsblk -J -b -o NAME,MOUNTPOINT,SIZE,FSAVAIL,RM,TYPE 2>/dev/null")).toString();
     json = JSON.parse(out);
   } catch { return []; }
 
@@ -58,14 +60,16 @@ export function startBackup(modelId: string, target: string): { error?: string }
   const existing = current();
   if (existing && existing.status === "running") return { error: "A backup is already running." };
   if (!ALLOWED_MOUNT_PREFIXES.some((p) => target.startsWith(p))) return { error: "Target is not an allowed external mount." };
-  if (!existsSync(target)) return { error: "Target mountpoint does not exist." };
+  // Target drive and rsync both live on spark1; only the source dir is also
+  // visible here (NFS in remote mode), so target checks/mkdir go through spark1.
+  try { execSync(spark1Cmd(`test -d '${target}'`)); } catch { return { error: "Target mountpoint does not exist." }; }
 
   const src = findModelDir(NODE, modelId);
   if (!src || !existsSync(src)) return { error: "Source model dir not found." };
 
   const destRoot = join(target, "cluster-dash-models");
   const dest = join(destRoot, idToSafeName(modelId));
-  try { mkdirSync(dest, { recursive: true }); } catch (e) { return { error: (e as Error).message }; }
+  try { execSync(spark1Cmd(`mkdir -p '${dest}'`)); } catch (e) { return { error: (e as Error).message }; }
 
   const job: BackupJob = {
     modelId, target, startedAt: Date.now(), percent: 0, status: "running",
@@ -74,8 +78,10 @@ export function startBackup(modelId: string, target: string): { error?: string }
   g.__modelBackupJob = job;
 
   // rsync -a preserves the full repo structure (blobs/snapshots/refs). Trailing
-  // slash on src copies its *contents* into dest.
-  const child = spawn("rsync", ["-a", "--info=progress2", `${src}/`, `${dest}/`], { stdio: ["ignore", "pipe", "pipe"] });
+  // slash on src copies its *contents* into dest. Runs on spark1: src disk and
+  // dest drive are both attached there (never copy model weights over NFS).
+  const rs = spark1SpawnArgs(`rsync -a --info=progress2 '${src}/' '${dest}/'`);
+  const child = spawn(rs.cmd, rs.args, { stdio: ["ignore", "pipe", "pipe"] });
 
   logEvent(NODE, modelId, "backup", "started", { target: dest }).then((id) => {
     let lastErr = "";

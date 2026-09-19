@@ -2,7 +2,7 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import { writeFileSync, existsSync } from "fs";
 import { NextResponse } from "next/server";
-import { NODE_SSH_HOST, sshCommand } from "@/lib/engine";
+import { NODE_SSH_HOST, SPARK1_HOST, sshCommand } from "@/lib/engine";
 
 export const dynamic = "force-dynamic";
 
@@ -111,7 +111,7 @@ async function getNodeTasks(host?: string) {
 
 export async function GET() {
   const [spark1, spark2, spark3, spark4] = await Promise.all([
-    getNodeTasks(),
+    getNodeTasks(SPARK1_HOST),
     getNodeTasks(NODE_SSH_HOST.spark2),
     getNodeTasks(NODE_SSH_HOST.spark3),
     getNodeTasks(NODE_SSH_HOST.spark4),

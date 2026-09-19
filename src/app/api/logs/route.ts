@@ -1,7 +1,7 @@
 import { exec } from "child_process";
 import { promisify } from "util";
 import { NextRequest, NextResponse } from "next/server";
-import { NODE_SSH_HOST, sshCommand } from "@/lib/engine";
+import { NODE_SSH_HOST, SPARK1_PM2, sshCommand, spark1Cmd } from "@/lib/engine";
 
 export const dynamic = "force-dynamic";
 const execAsync = promisify(exec);
@@ -34,14 +34,16 @@ export async function GET(req: NextRequest) {
   try {
     let raw = "";
     if (isPm2 && pm2Name) {
-      const { stdout } = await execAsync(`pm2 logs "${pm2Name}" --nostream --lines ${lines} 2>&1`, { timeout: 8000 });
+      // pm2 state lives on spark1 wherever the dashboard runs.
+      const { stdout } = await execAsync(spark1Cmd(`${SPARK1_PM2} logs "${pm2Name}" --nostream --lines ${lines} 2>&1`), { timeout: 8000 });
       raw = stdout;
     } else {
       const src = SOURCES[source];
       if (!src) return NextResponse.json({ error: "Unknown source" }, { status: 400 });
       if (src.type === "docker-local") {
+        // "local" docker sources (open-webui) live on spark1, not the dashboard host.
         const { stdout, stderr } = await execAsync(
-          `docker logs ${src.target} --tail ${lines} 2>&1`,
+          spark1Cmd(`docker logs ${src.target} --tail ${lines} 2>&1`),
           { timeout: 8000 }
         );
         raw = stdout + stderr;

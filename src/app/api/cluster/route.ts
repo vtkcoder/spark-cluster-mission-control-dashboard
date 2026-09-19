@@ -2,7 +2,7 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import { writeFileSync, existsSync } from "fs";
 import { NextResponse } from "next/server";
-import { detectEngine, getEngineModels, getEngineMetrics, getSglangThroughput, NODE_LAN_IP, NODE_SSH_HOST, sshCommand } from "@/lib/engine";
+import { detectEngine, getEngineModels, getEngineMetrics, getSglangThroughput, NODE_LAN_IP, NODE_SSH_HOST, SPARK1_HOST, sshCommand } from "@/lib/engine";
 
 export const dynamic = "force-dynamic";
 
@@ -116,10 +116,12 @@ async function getDockerUptime(container: string, host?: string): Promise<number
 
 async function getDiskBytes(path: string, host?: string): Promise<number> {
   try {
-    const cmd = `du -sb '${path}' 2>/dev/null | awk '{print $1}'`;
-    const full = host ? `ssh -o ConnectTimeout=3 -o BatchMode=yes ${host} "${cmd}"` : cmd;
-    const { stdout } = await execAsync(full, { timeout: 5000 });
-    return parseInt(stdout.trim()) || 0;
+    // -sk not -sb: the no-host branch may run on macOS (BSD du has no -b);
+    // KB × 1024 is close enough for the download-progress gauges.
+    const cmd = `du -sk '${path}' 2>/dev/null | awk '{print $1}'`;
+    const full = host ? sshCommand(cmd, host) : cmd;
+    const { stdout } = await execAsync(full, { timeout: 15000 });
+    return (parseInt(stdout.trim()) || 0) * 1024;
   } catch {
     return 0;
   }
@@ -128,7 +130,7 @@ async function getDiskBytes(path: string, host?: string): Promise<number> {
 async function hasIncompleteBlobs(path: string, host?: string): Promise<boolean> {
   try {
     const cmd = `ls '${path}/blobs/' 2>/dev/null | grep -c '\\.incomplete' || echo 0`;
-    const full = host ? `ssh -o ConnectTimeout=3 -o BatchMode=yes ${host} "${cmd}"` : cmd;
+    const full = host ? sshCommand(cmd, host) : cmd;
     const { stdout } = await execAsync(full, { timeout: 3000 });
     return parseInt(stdout.trim()) > 0;
   } catch {
@@ -211,7 +213,7 @@ export async function GET() {
     s1RxBytes,
     s2RxBytes,
   ] = await Promise.all([
-    getNodeStats(),
+    getNodeStats(SPARK1_HOST),
     getNodeStats(NODE_SSH_HOST.spark2),
     getNodeStats(NODE_SSH_HOST.spark3),
     getNodeStats(NODE_SSH_HOST.spark4),
@@ -222,9 +224,9 @@ export async function GET() {
     wSpec  ? getDockerStatus(wSpec.name, wSpec.host)   : Promise.resolve("absent"),
     w2Spec ? getDockerStatus(w2Spec.name, w2Spec.host) : Promise.resolve("absent"),
     w3Spec ? getDockerStatus(w3Spec.name, w3Spec.host) : Promise.resolve("absent"),
-    getDockerStatus("open-webui"),
+    getDockerStatus("open-webui", SPARK1_HOST),
     getDockerUptime(headSpec.name, headSpec.host),
-    getNetworkRx(NET_IFACE),
+    getNetworkRx(NET_IFACE, SPARK1_HOST),
     getNetworkRx(NET_IFACE, NODE_SSH_HOST.spark2),
   ]);
 

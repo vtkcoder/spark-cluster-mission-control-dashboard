@@ -173,8 +173,9 @@ function resolveSnapshotDir(dir: string): { snapDir: string | null; hash: string
 
 function dirBytes(path: string): number {
   try {
-    const out = execSync(`du -sb '${path}' 2>/dev/null`, { timeout: 30000 }).toString();
-    return parseInt(out.split("\t")[0]) || 0;
+    // -sk not -sb: may run on macOS (BSD du has no -b) against the NFS mounts.
+    const out = execSync(`du -sk '${path}' 2>/dev/null`, { timeout: 60000 }).toString();
+    return (parseInt(out.split("\t")[0]) || 0) * 1024;
   } catch {
     return 0;
   }

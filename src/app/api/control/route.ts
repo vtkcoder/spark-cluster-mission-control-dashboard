@@ -3,7 +3,7 @@ import { promisify } from "util";
 import { readdirSync, existsSync, statSync } from "fs";
 import { join } from "path";
 import { NextRequest, NextResponse } from "next/server";
-import { NODE_LAN_IP } from "@/lib/engine";
+import { NODE_SSH_HOST, spark1Cmd, sshCommand } from "@/lib/engine";
 
 export const dynamic = "force-dynamic";
 const execAsync = promisify(exec);
@@ -86,8 +86,9 @@ function cacheKeyToModelId(cacheKey: string): string {
 
 function dirBytes(path: string): number {
   try {
-    const result = require("child_process").execSync(`du -sb '${path}' 2>/dev/null`, { timeout: 5000 });
-    return parseInt(result.toString().split("\t")[0]) || 0;
+    // -sk not -sb: may run on macOS (BSD du has no -b) against the NFS-mounted cache.
+    const result = require("child_process").execSync(`du -sk '${path}' 2>/dev/null`, { timeout: 15000 });
+    return (parseInt(result.toString().split("\t")[0]) || 0) * 1024;
   } catch { return 0; }
 }
 
@@ -209,7 +210,7 @@ export async function POST(req: NextRequest) {
     if (body.action === "vllm-stop") {
       // Current cluster: remove `vllm-mm` on spark2/3/4 via the script's `down`.
       try {
-        const { stdout } = await execAsync(`bash ${CLUSTER_SCRIPT} down 2>&1`, { timeout: 60000 });
+        const { stdout } = await execAsync(spark1Cmd(`bash ${CLUSTER_SCRIPT} down 2>&1`), { timeout: 60000 });
         return NextResponse.json({ ok: true, message: `Cluster stopped (vllm-mm removed on spark2/3/4).\n${stdout.trim()}` });
       } catch (e) {
         return NextResponse.json({ ok: false, error: (e as Error).message }, { status: 500 });
@@ -220,7 +221,7 @@ export async function POST(req: NextRequest) {
       // Current cluster is fixed to MiniMax-M2.7 FP8 PP=3 (the proven config). The
       // model selector / sliders apply to the legacy single-head flow only.
       try {
-        const { stdout } = await execAsync(`bash ${CLUSTER_SCRIPT} up 2>&1`, { timeout: 90000 });
+        const { stdout } = await execAsync(spark1Cmd(`bash ${CLUSTER_SCRIPT} up 2>&1`), { timeout: 90000 });
         return NextResponse.json({
           ok: true,
           message: `Cluster launching: MiniMax-M2.7 FP8 · PP=3 · spark2/3/4. Weight load ~10–12 min — watch Overview / vLLM logs.\n${stdout.trim()}`,
@@ -260,16 +261,16 @@ export async function POST(req: NextRequest) {
       };
 
       await Promise.allSettled([
-        execAsync("docker rm -f vllm-head 2>/dev/null; true", { timeout: 15000 }),
-        execAsync(`ssh -o ConnectTimeout=5 -o BatchMode=yes ${NODE_LAN_IP.spark2} 'docker rm -f vllm-worker 2>/dev/null; true'`, { timeout: 15000 }),
+        execAsync(spark1Cmd("docker rm -f vllm-head 2>/dev/null; true"), { timeout: 15000 }),
+        execAsync(sshCommand("docker rm -f vllm-worker 2>/dev/null; true", NODE_SSH_HOST.spark2, 5), { timeout: 15000 }),
       ]);
 
       const headCmd = buildHeadCmd(model, maxLen, gpuUtil, modelCfg);
       const workerCmd = buildWorkerCmd(model, maxLen, gpuUtil, modelCfg);
 
       const [headResult, workerResult] = await Promise.allSettled([
-        execAsync(headCmd, { timeout: 30000 }),
-        execAsync(`ssh -o ConnectTimeout=10 -o BatchMode=yes ${NODE_LAN_IP.spark2} '${workerCmd}'`, { timeout: 30000 }),
+        execAsync(spark1Cmd(headCmd), { timeout: 30000 }),
+        execAsync(sshCommand(workerCmd, NODE_SSH_HOST.spark2, 10), { timeout: 30000 }),
       ]);
 
       const headOk = headResult.status === "fulfilled";
@@ -288,12 +289,12 @@ export async function POST(req: NextRequest) {
     }
 
     if (body.action === "container-start") {
-      const { stdout } = await execAsync(`docker start ${body.container}`, { timeout: 10000 });
+      const { stdout } = await execAsync(spark1Cmd(`docker start ${body.container}`), { timeout: 10000 });
       return NextResponse.json({ ok: true, message: stdout.trim() });
     }
 
     if (body.action === "container-stop") {
-      const { stdout } = await execAsync(`docker stop ${body.container}`, { timeout: 15000 });
+      const { stdout } = await execAsync(spark1Cmd(`docker stop ${body.container}`), { timeout: 15000 });
       return NextResponse.json({ ok: true, message: stdout.trim() });
     }
 

@@ -1,6 +1,7 @@
 import { exec } from "child_process";
 import { promisify } from "util";
 import { NextRequest, NextResponse } from "next/server";
+import { SPARK1_PM2, spark1Cmd } from "@/lib/engine";
 
 export const dynamic = "force-dynamic";
 const execAsync = promisify(exec);
@@ -11,7 +12,7 @@ function stripAnsi(s: string): string {
 
 export async function GET() {
   try {
-    const { stdout } = await execAsync("pm2 jlist", { timeout: 5000 });
+    const { stdout } = await execAsync(spark1Cmd(`${SPARK1_PM2} jlist`), { timeout: 8000 });
     const raw = JSON.parse(stdout) as Record<string, unknown>[];
     const procs = raw.map((p) => {
       const env = (p.pm2_env ?? {}) as Record<string, unknown>;
@@ -43,7 +44,7 @@ export async function POST(req: NextRequest) {
     if (!name || !["start", "stop", "restart"].includes(action)) {
       return NextResponse.json({ ok: false, error: "Invalid params" }, { status: 400 });
     }
-    const { stdout, stderr } = await execAsync(`pm2 ${action} "${name}" 2>&1`, { timeout: 10000 });
+    const { stdout, stderr } = await execAsync(spark1Cmd(`${SPARK1_PM2} ${action} "${name}" 2>&1`), { timeout: 15000 });
     const output = stripAnsi(stdout + stderr).trim();
     return NextResponse.json({ ok: true, output });
   } catch (e: unknown) {

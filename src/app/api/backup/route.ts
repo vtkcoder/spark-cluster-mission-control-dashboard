@@ -1,8 +1,9 @@
 import { exec, spawn } from "child_process";
 import { promisify } from "util";
-import { promises as fsp, existsSync, mkdirSync, readFileSync, createWriteStream } from "fs";
+import { promises as fsp, existsSync, mkdirSync, createWriteStream } from "fs";
 import path from "path";
 import { NextRequest, NextResponse } from "next/server";
+import { spark1Cmd, spark1SpawnArgs } from "@/lib/engine";
 
 export const dynamic = "force-dynamic";
 
@@ -28,12 +29,17 @@ function ensureJobsDir() {
   if (!existsSync(JOBS_DIR)) mkdirSync(JOBS_DIR, { recursive: true });
 }
 
-function resticEnv(): NodeJS.ProcessEnv {
-  return {
-    ...process.env,
-    RESTIC_REPOSITORY,
-    RESTIC_PASSWORD_FILE,
-  };
+// Everything restic touches (the binary, rest-server, password file, backup
+// drive, log, sudo scripts) lives on spark1 — every command below goes through
+// spark1Cmd/spark1SpawnArgs, so the env travels inline in the shell string.
+const RESTIC_ENV_PREFIX =
+  `RESTIC_REPOSITORY='${RESTIC_REPOSITORY}' RESTIC_PASSWORD_FILE='${RESTIC_PASSWORD_FILE}'`;
+
+/** Read a spark1 file (retention env, password, log tail) wherever the dashboard runs. */
+async function readSpark1File(p: string, maxBytes?: number): Promise<string> {
+  const inner = maxBytes ? `tail -c ${maxBytes} '${p}' 2>/dev/null` : `cat '${p}'`;
+  const { stdout } = await execAsync(spark1Cmd(inner), { timeout: 10000, maxBuffer: 1024 * 1024 });
+  return stdout;
 }
 
 // ── Background job runner ────────────────────────────────────────────────────
@@ -72,9 +78,8 @@ async function readStatus(id: string): Promise<JobStatus | null> {
 
 function spawnJob(
   op: JobOp,
-  cmd: string,
-  args: string[],
-  opts: { env?: NodeJS.ProcessEnv; meta?: Record<string, unknown> } = {}
+  shellCmd: string,
+  opts: { meta?: Record<string, unknown> } = {}
 ): JobStatus {
   ensureJobsDir();
   const id = `${Date.now()}-${Math.floor(Math.random() * 1000)
@@ -82,16 +87,16 @@ function spawnJob(
     .padStart(3, "0")}`;
   const { log: logPath, status: statusPath } = jobPaths(id);
 
-  // Use a small bash wrapper so we can append the timestamp header + capture exit code.
-  // We pipe stdout+stderr into the log file via shell redirection inside the child.
-  const child = spawn(cmd, args, {
-    env: opts.env ?? process.env,
+  // One shell string, run on spark1 (bash -c locally, ssh in remote mode); job
+  // log + status files stay on the dashboard host either way.
+  const sp = spark1SpawnArgs(shellCmd);
+  const child = spawn(sp.cmd, sp.args, {
     stdio: ["ignore", "pipe", "pipe"],
     detached: false,
   });
 
   const stream = createWriteStream(logPath, { flags: "a" });
-  stream.write(`[${new Date().toISOString()}] ${op} starting: ${cmd} ${args.join(" ")}\n`);
+  stream.write(`[${new Date().toISOString()}] ${op} starting: ${shellCmd}\n`);
   child.stdout?.pipe(stream, { end: false });
   child.stderr?.pipe(stream, { end: false });
 
@@ -138,8 +143,7 @@ function spawnJob(
 
 // ── Read helpers ─────────────────────────────────────────────────────────────
 async function runRestic(args: string[], timeoutMs = 30000): Promise<string> {
-  const { stdout } = await execAsync(`${RESTIC_BIN} ${args.join(" ")}`, {
-    env: resticEnv(),
+  const { stdout } = await execAsync(spark1Cmd(`${RESTIC_ENV_PREFIX} ${RESTIC_BIN} ${args.join(" ")}`), {
     timeout: timeoutMs,
     maxBuffer: 64 * 1024 * 1024,
   });
@@ -163,10 +167,10 @@ async function tailFile(p: string, maxBytes = 32_000): Promise<string> {
   }
 }
 
-function parseRetention(): { keepDaily: number; keepWeekly: number; keepMonthly: number } {
+async function parseRetention(): Promise<{ keepDaily: number; keepWeekly: number; keepMonthly: number }> {
   const fallback = { keepDaily: 7, keepWeekly: 4, keepMonthly: 6 };
   try {
-    const txt = readFileSync(RETENTION_ENV_FILE, "utf8");
+    const txt = await readSpark1File(RETENTION_ENV_FILE);
     const get = (key: string): number | null => {
       const m = txt.match(new RegExp(`^${key}\\s*=\\s*(\\d+)`, "m"));
       return m ? Number(m[1]) : null;
@@ -183,7 +187,7 @@ function parseRetention(): { keepDaily: number; keepWeekly: number; keepMonthly:
 
 async function driveUsage(): Promise<{ total: number; used: number; avail: number } | null> {
   try {
-    const { stdout } = await execAsync(`df -B1 --output=size,used,avail ${BACKUP_MOUNT} | tail -n1`);
+    const { stdout } = await execAsync(spark1Cmd(`df -B1 --output=size,used,avail ${BACKUP_MOUNT} | tail -n1`));
     const [size, used, avail] = stdout.trim().split(/\s+/).map(Number);
     if (![size, used, avail].some(Number.isNaN)) return { total: size, used, avail };
     return null;
@@ -194,7 +198,7 @@ async function driveUsage(): Promise<{ total: number; used: number; avail: numbe
 
 async function restServerStatus(): Promise<{ active: boolean; sub: string }> {
   try {
-    const { stdout } = await execAsync(`systemctl is-active ${REST_SERVICE}`);
+    const { stdout } = await execAsync(spark1Cmd(`systemctl is-active ${REST_SERVICE}`));
     return { active: stdout.trim() === "active", sub: stdout.trim() };
   } catch (e: unknown) {
     // is-active exits non-zero when inactive; capture the substate from stdout if available.
@@ -256,8 +260,8 @@ export async function GET(req: NextRequest) {
           restServerStatus(),
           nextScheduled(),
         ]);
-        const retention = parseRetention();
-        const logTail = await tailFile(BACKUP_LOG, 8000);
+        const retention = await parseRetention();
+        const logTail = await readSpark1File(BACKUP_LOG, 8000).catch(() => "");
         const last = snaps.length ? snaps[snaps.length - 1] : null;
         return NextResponse.json({
           ok: true,
@@ -294,8 +298,8 @@ export async function GET(req: NextRequest) {
         }
         // restic ls --json emits one JSON object per line, recursive by default — we filter to the requested dir.
         const { stdout } = await execAsync(
-          `${RESTIC_BIN} ls --no-lock --json ${snap} ${JSON.stringify(target)}`,
-          { env: resticEnv(), timeout: 60000, maxBuffer: 64 * 1024 * 1024 }
+          spark1Cmd(`${RESTIC_ENV_PREFIX} ${RESTIC_BIN} ls --no-lock --json ${snap} ${JSON.stringify(target)}`),
+          { timeout: 60000, maxBuffer: 64 * 1024 * 1024 }
         );
         const entries: Array<{
           name: string;
@@ -346,17 +350,17 @@ export async function GET(req: NextRequest) {
           Math.max(parseInt(searchParams.get("bytes") ?? "32000", 10) || 32000, 1000),
           200_000
         );
-        const text = await tailFile(BACKUP_LOG, bytes);
+        const text = await readSpark1File(BACKUP_LOG, bytes).catch(() => "");
         return NextResponse.json({ ok: true, log: text });
       }
 
       case "password": {
-        const txt = await fsp.readFile(RESTIC_PASSWORD_FILE, "utf8");
+        const txt = await readSpark1File(RESTIC_PASSWORD_FILE);
         return NextResponse.json({ ok: true, password: txt.trim() });
       }
 
       case "schedule": {
-        const retention = parseRetention();
+        const retention = await parseRetention();
         const sched = await nextScheduled();
         return NextResponse.json({ ok: true, retention, schedule: sched });
       }
@@ -393,12 +397,12 @@ export async function POST(req: NextRequest) {
   try {
     switch (op) {
       case "backup-now": {
-        const status = spawnJob("backup-now", "sudo", ["-n", BACKUP_SCRIPT]);
+        const status = spawnJob("backup-now", `sudo -n ${BACKUP_SCRIPT}`);
         return NextResponse.json({ ok: true, jobId: status.id });
       }
 
       case "check": {
-        const status = spawnJob("check", "sudo", ["-n", CHECK_SCRIPT]);
+        const status = spawnJob("check", `sudo -n ${CHECK_SCRIPT}`);
         return NextResponse.json({ ok: true, jobId: status.id });
       }
 
@@ -406,8 +410,8 @@ export async function POST(req: NextRequest) {
         // restic locks live in /locks/ on the REST server, which append-only
         // mode DOES allow DELETE on (needed for the protocol). No sudo needed.
         const { stdout, stderr } = await execAsync(
-          `${RESTIC_BIN} unlock --remove-all --no-cache`,
-          { env: resticEnv(), timeout: 30000 }
+          spark1Cmd(`${RESTIC_ENV_PREFIX} ${RESTIC_BIN} unlock --remove-all --no-cache`),
+          { timeout: 30000 }
         );
         return NextResponse.json({ ok: true, output: (stdout + stderr).trim() });
       }
@@ -434,12 +438,12 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        await fsp.mkdir(target, { recursive: true });
+        // Restore lands on spark1's disk (target is /home/absolome/restore/...).
+        await execAsync(spark1Cmd(`mkdir -p '${target}'`), { timeout: 10000 });
 
         const args = ["restore", snap, "--target", target];
-        for (const p of paths) args.push("--include", p);
-        const status = spawnJob("restore", RESTIC_BIN, args, {
-          env: resticEnv(),
+        for (const p of paths) args.push("--include", `'${p}'`);
+        const status = spawnJob("restore", `${RESTIC_ENV_PREFIX} ${RESTIC_BIN} ${args.join(" ")}`, {
           meta: { snap, target, paths },
         });
         return NextResponse.json({ ok: true, jobId: status.id });
@@ -470,8 +474,9 @@ export async function POST(req: NextRequest) {
         // Direct overwrite — the parent dir isn't writable by absolome, but the
         // file itself is group-writable (root:absolome 0664). The only reader is
         // the nightly cron at 02:00, so the truncate-then-write race window is
-        // effectively impossible to hit in practice.
-        await fsp.writeFile(RETENTION_ENV_FILE, next);
+        // effectively impossible to hit in practice. Content is quote-free, so a
+        // single-quoted printf survives the ssh hop in remote-spark1 mode.
+        await execAsync(spark1Cmd(`printf '%s' '${next}' > ${RETENTION_ENV_FILE}`), { timeout: 10000 });
         return NextResponse.json({
           ok: true,
           retention: { keepDaily: d, keepWeekly: w, keepMonthly: m },

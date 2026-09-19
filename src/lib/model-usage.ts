@@ -1,6 +1,6 @@
 import { execSync } from "child_process";
 import { shortName } from "./model-scan";
-import { detectEngine, getEngineModels } from "./engine";
+import { detectEngine, getEngineModels, spark1Cmd } from "./engine";
 
 export interface UsageHit {
   source: "engine" | "script" | "config";
@@ -29,8 +29,10 @@ export function grepHits(
   source: UsageHit["source"],
   opts: { max: number },
 ): UsageHit[] {
+  // The grepped roots (~/research, ~/sites) live on spark1 — run the whole
+  // investigation there in remote-spark1 mode.
   const existing = roots.filter((r) => {
-    try { execSync(`test -d '${shellEscape(r)}'`); return true; } catch { return false; }
+    try { execSync(spark1Cmd(`test -d '${shellEscape(r)}'`)); return true; } catch { return false; }
   });
   if (!existing.length) return [];
   const excludes = [
@@ -43,7 +45,7 @@ export function grepHits(
     existing.map((r) => `'${shellEscape(r)}'`).join(" ") +
     ` 2>/dev/null | head -n ${opts.max + 1} || true`;
   let out = "";
-  try { out = execSync(cmd, { timeout: 15000, maxBuffer: 8 * 1024 * 1024 }).toString(); } catch { return []; }
+  try { out = execSync(spark1Cmd(cmd, 5), { timeout: 30000, maxBuffer: 8 * 1024 * 1024 }).toString(); } catch { return []; }
   const lines = out.split("\n").filter(Boolean);
   return lines.slice(0, opts.max).map((l) => {
     // format: path:lineno:content
