@@ -2,7 +2,7 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import { writeFileSync, existsSync } from "fs";
 import { NextResponse } from "next/server";
-import { NODE_LAN_IP } from "@/lib/engine";
+import { NODE_SSH_HOST, sshCommand } from "@/lib/engine";
 
 export const dynamic = "force-dynamic";
 
@@ -100,7 +100,7 @@ if (!existsSync(TASKS_SCRIPT)) {
 async function getNodeTasks(host?: string) {
   try {
     const cmd = host
-      ? `ssh -o ConnectTimeout=3 -o BatchMode=yes ${host} python3 /dev/stdin < ${TASKS_SCRIPT}`
+      ? `${sshCommand("python3 /dev/stdin", host)} < ${TASKS_SCRIPT}`
       : `python3 ${TASKS_SCRIPT}`;
     const { stdout } = await execAsync(cmd, { timeout: 8000 });
     return { online: true, ...JSON.parse(stdout.trim()) };
@@ -112,9 +112,9 @@ async function getNodeTasks(host?: string) {
 export async function GET() {
   const [spark1, spark2, spark3, spark4] = await Promise.all([
     getNodeTasks(),
-    getNodeTasks(NODE_LAN_IP.spark2),
-    getNodeTasks(NODE_LAN_IP.spark3),
-    getNodeTasks(NODE_LAN_IP.spark4),
+    getNodeTasks(NODE_SSH_HOST.spark2),
+    getNodeTasks(NODE_SSH_HOST.spark3),
+    getNodeTasks(NODE_SSH_HOST.spark4),
   ]);
   return NextResponse.json({ ts: Date.now(), spark1, spark2, spark3, spark4 });
 }

@@ -10,7 +10,7 @@
 > (default `8001,8000,30000,11434`); fleet nodes are `FLEET` in engine.ts.
 >
 > **What's live now:** engine **vLLM**, container **`vllm_node`**, head = **spark1 (local)** + worker =
-> **spark2**, **TP=2**, OpenAI API on **spark1 `10.0.0.223:8001`** (= localhost:8001; **port 8001**, not
+> **spark2**, **TP=2**, OpenAI API on **spark1 `10.0.0.102:8001`** (= localhost:8001; **port 8001**, not
 > 8000 — 8000 is the restic rest-server), serving **`deepseek-ai/DeepSeek-V4-Flash`** over a direct
 > CX7 RoCE cable (`enp1s0f0np0`/`rocep1s0f0`, `192.168.100.10/.11`). The dashboard runs on spark1,
 > reaches the API over LAN and containers over SSH. **Launch/stop is NOT via the old
@@ -35,16 +35,16 @@ Your two responsibilities, in priority order:
 
 | Node | Hostname | LAN IP | Virtual IP (cluster) | Tailscale IP |
 |---|---|---|---|---|
-| spark1 (master) | edgexpert-74a6 | 10.0.0.223 | 192.168.99.10 | 100.79.103.61 |
+| spark1 (master) | edgexpert-74a6 | 10.0.0.102 | 192.168.99.10 | 100.79.103.61 |
 | spark2 (worker) | edgexpert-77fd | 10.0.0.45 | 192.168.99.11 | — |
-| spark3 (worker) | edgexpert-88dd | 10.0.0.95 | 192.168.99.12 | — |
+| spark3 (worker) | edgexpert-88dd | 10.0.0.101 | 192.168.99.12 | — |
 | spark4 (worker) | edgexpert-7833 | 10.0.0.66 | 192.168.99.13 | — |
 
 Each node: **NVIDIA DGX Spark** — GB10 Grace Blackwell SoC, 128 GB unified CPU+GPU memory (not separate pools — one physical pool shared by CPU and GPU). Total cluster memory: 512 GB.
 
 CX7 links (4-node **RING**, re-cabled 2026-06-06 — NOT a full mesh; 2 ports/node can't mesh 4 nodes): `spark1 –A:100– spark2 –B:101– spark3 –C:103– spark4 –D:102– spark1`, each a 200G QSFP56 DAC point-to-point /24 via `enp1s0f0np0`/`enp1s0f1np1`. Each node has a virtual `/32` on `192.168.99.0/24`; the two non-adjacent ("diagonal") node pairs are reached via IP-forwarding + transit routes on the in-between node. MTU 9000 throughout. **Bring-up after any reboot: `~/research/cluster-4node-preflight.sh`** (sets IPs/routes/forwarding + mounts NFS + restores patches — none of that persists a reboot). Full detail: `~/server-board.md` 2026-06-06 + `~/research/3-spark-cluster-runbook.md` banner.
 
-LAN: `enP7s7` on spark1 at 10.0.0.223 via router 10.0.0.1. spark2/3/4 via the same router.
+LAN: `enP7s7` on spark1 at 10.0.0.102 via router 10.0.0.1. spark2/3/4 via the same router.
 
 **NFS**: spark1 exports `/home/absolome/.cache/huggingface` to `192.168.99.0/24` plus the CX7 link subnets `192.168.100/101/102/103.0/24`. All four nodes mount it at the same path. All HF model downloads happen on spark1 only — spark2/3/4 read weights via NFS during inference. NOTE: the `_netdev` fstab mount fails at boot (CX7 routes don't exist yet) — the pre-flight script re-mounts it; if a worker shows OFFLINE or "model not found", check the mount first.
 

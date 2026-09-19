@@ -42,10 +42,23 @@ export interface EngineInfo {
 // LAN IPs are used for SSH + API reachability (they route via the router whenever
 // the node is powered, independent of the CX7 ring / preflight /32 routes). spark1
 // is the local node where the dashboard runs (no SSH, API on localhost).
+// 2026-08-07: verified ALL LAN IPs by live SSH probe from spark1 (hostname match).
+// spark2 stayed on .45 (a 2026-08-02 note claiming a DHCP move to .100 was wrong —
+// .100 times out). spark4 is up again and answers on .66 (the earlier "stale
+// .66 / unrelated device" note was itself stale).
 export const NODE_LAN_IP = {
   spark2: "10.0.0.45",
-  spark3: "10.0.0.95",
+  spark3: "10.0.0.101",
   spark4: "10.0.0.66",
+} as const;
+
+export const NODE_SSH_HOST = {
+  spark2: NODE_LAN_IP.spark2,
+  spark3: NODE_LAN_IP.spark3,
+  // spark4 currently shares 10.0.0.66 with another LAN device, so SSH to the
+  // LAN IPv4 is nondeterministic. Its IPv6 link-local address is stable for the
+  // NIC MAC and reaches the real Spark directly.
+  spark4: "fe80::bdc7:47ee:6b36:a9cc%enP7s7",
 } as const;
 
 type NodeKey = "spark1" | "spark2" | "spark3" | "spark4";
@@ -53,9 +66,9 @@ interface FleetNode { key: NodeKey; host?: string; apiHost: string }
 
 const FLEET: FleetNode[] = [
   { key: "spark1", host: undefined,          apiHost: "localhost" },
-  { key: "spark2", host: NODE_LAN_IP.spark2, apiHost: NODE_LAN_IP.spark2 },
-  { key: "spark3", host: NODE_LAN_IP.spark3, apiHost: NODE_LAN_IP.spark3 },
-  { key: "spark4", host: NODE_LAN_IP.spark4, apiHost: NODE_LAN_IP.spark4 },
+  { key: "spark2", host: NODE_SSH_HOST.spark2, apiHost: NODE_LAN_IP.spark2 },
+  { key: "spark3", host: NODE_SSH_HOST.spark3, apiHost: NODE_LAN_IP.spark3 },
+  { key: "spark4", host: NODE_SSH_HOST.spark4, apiHost: NODE_LAN_IP.spark4 },
 ];
 
 // Candidate OpenAI-API ports to probe when the port can't be read from the live
@@ -68,15 +81,26 @@ const CANDIDATE_PORTS = (process.env.CLUSTER_DASH_API_PORTS ?? "8001,8000,30000,
 export const API_PORT = CANDIDATE_PORTS[0] ?? 8001;
 export const HEAD_HOST = "localhost";
 // Head SSH target used by getSglangThroughput() default; overridden by detection.
-export const HEAD_SSH = NODE_LAN_IP.spark2;
+export const HEAD_SSH = NODE_SSH_HOST.spark2;
 
 const ENGINE_RE = /vllm|sglang/i;
 const WEBUI_RE = /webui/i;
 
+function sshPrefix(host: string, connectTimeout = 3): string {
+  const isLinkLocalV6 = host.includes("%");
+  const addr = JSON.stringify(isLinkLocalV6 ? `absolome@${host}` : host);
+  const alias = host === NODE_SSH_HOST.spark4 ? " -o HostKeyAlias=spark4 -6" : "";
+  return `ssh -o ConnectTimeout=${connectTimeout} -o BatchMode=yes${alias} ${addr}`;
+}
+
+export function sshCommand(inner: string, host: string, connectTimeout = 3): string {
+  return `${sshPrefix(host, connectTimeout)} ${JSON.stringify(inner)}`;
+}
+
 // ── Low-level helpers ─────────────────────────────────────────────────────────
 async function sh(inner: string, host: string | undefined, timeout = 4000): Promise<string> {
   const cmd = host
-    ? `ssh -o ConnectTimeout=3 -o BatchMode=yes ${host} ${JSON.stringify(inner)}`
+    ? sshCommand(inner, host)
     : inner;
   const { stdout } = await execAsync(cmd, { timeout });
   return stdout;

@@ -2,7 +2,7 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import { writeFileSync, existsSync } from "fs";
 import { NextResponse } from "next/server";
-import { detectEngine, getEngineModels, getEngineMetrics, getSglangThroughput, NODE_LAN_IP } from "@/lib/engine";
+import { detectEngine, getEngineModels, getEngineMetrics, getSglangThroughput, NODE_LAN_IP, NODE_SSH_HOST, sshCommand } from "@/lib/engine";
 
 export const dynamic = "force-dynamic";
 
@@ -81,7 +81,7 @@ interface NodeRaw {
 async function getNodeStats(host?: string): Promise<NodeRaw | null> {
   try {
     const cmd = host
-      ? `ssh -o ConnectTimeout=3 -o BatchMode=yes ${host} python3 /dev/stdin < ${COLLECTOR_PATH}`
+      ? `${sshCommand("python3 /dev/stdin", host)} < ${COLLECTOR_PATH}`
       : `python3 ${COLLECTOR_PATH}`;
     const { stdout } = await execAsync(cmd, { timeout: 6000 });
     return JSON.parse(stdout.trim()) as NodeRaw;
@@ -93,7 +93,7 @@ async function getNodeStats(host?: string): Promise<NodeRaw | null> {
 async function getDockerStatus(container: string, host?: string): Promise<string> {
   try {
     const inspect = `docker inspect ${container} --format '{{.State.Status}}' 2>/dev/null || echo absent`;
-    const cmd = host ? `ssh -o ConnectTimeout=3 -o BatchMode=yes ${host} "${inspect}"` : inspect;
+    const cmd = host ? sshCommand(inspect, host) : inspect;
     const { stdout } = await execAsync(cmd, { timeout: 4000 });
     return stdout.trim() || "absent";
   } catch {
@@ -104,7 +104,7 @@ async function getDockerStatus(container: string, host?: string): Promise<string
 async function getDockerUptime(container: string, host?: string): Promise<number | null> {
   try {
     const inspect = `docker inspect ${container} --format '{{.State.StartedAt}}' 2>/dev/null`;
-    const cmd = host ? `ssh -o ConnectTimeout=3 -o BatchMode=yes ${host} "${inspect}"` : inspect;
+    const cmd = host ? sshCommand(inspect, host) : inspect;
     const { stdout } = await execAsync(cmd, { timeout: 4000 });
     const started = stdout.trim();
     if (!started) return null;
@@ -139,7 +139,7 @@ async function hasIncompleteBlobs(path: string, host?: string): Promise<boolean>
 async function getNetworkRx(iface: string, host?: string): Promise<number> {
   try {
     const cmd = `cat /proc/net/dev | grep '${iface}' | awk '{print $2}'`;
-    const full = host ? `ssh -o ConnectTimeout=3 -o BatchMode=yes ${host} "${cmd}"` : cmd;
+    const full = host ? sshCommand(cmd, host) : cmd;
     const { stdout } = await execAsync(full, { timeout: 2000 });
     return parseInt(stdout.trim()) || 0;
   } catch {
@@ -212,9 +212,9 @@ export async function GET() {
     s2RxBytes,
   ] = await Promise.all([
     getNodeStats(),
-    getNodeStats(NODE_LAN_IP.spark2),
-    getNodeStats(NODE_LAN_IP.spark3),
-    getNodeStats(NODE_LAN_IP.spark4),
+    getNodeStats(NODE_SSH_HOST.spark2),
+    getNodeStats(NODE_SSH_HOST.spark3),
+    getNodeStats(NODE_SSH_HOST.spark4),
     getEngineModels(engine.apiHost, engine.port),
     getEngineMetrics(engine.apiHost, engine.port, engine.metricsPrefix),
     engine.type === "sglang" ? getSglangThroughput(headSpec.name, headSpec.host) : Promise.resolve(null),
@@ -225,7 +225,7 @@ export async function GET() {
     getDockerStatus("open-webui"),
     getDockerUptime(headSpec.name, headSpec.host),
     getNetworkRx(NET_IFACE),
-    getNetworkRx(NET_IFACE, NODE_LAN_IP.spark2),
+    getNetworkRx(NET_IFACE, NODE_SSH_HOST.spark2),
   ]);
 
   // Network speed (bytes/sec since last poll) — applies to whichever model is active
