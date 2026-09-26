@@ -14,8 +14,21 @@
 // Server-side only (uses child_process).
 import { exec } from "child_process";
 import { promisify } from "util";
+import { mkdirSync } from "fs";
 
 const execAsync = promisify(exec);
+
+// ── SSH connection multiplexing ───────────────────────────────────────────────
+// One /api/cluster poll fans out to ~15 ssh invocations (4 node collectors, docker
+// status/uptime, network counters, engine discovery). A cold handshake to a Spark
+// costs ~1.0s, which put the endpoint at ~4s against a 3-second UI poll — requests
+// piled up. Reusing one master connection per host drops each call to ~0.02s.
+// ControlMaster=auto re-establishes the master transparently if it dies, so this
+// is a pure win with no failure mode of its own.
+const SSH_CTL_DIR = "/tmp/cluster-dash-ssh";
+try { mkdirSync(SSH_CTL_DIR, { recursive: true, mode: 0o700 }); } catch { /* best effort */ }
+// Short dir + %r@%h:%p keeps the socket path well inside the 104-char sun_path limit.
+const SSH_MUX = `-o ControlMaster=auto -o ControlPath=${SSH_CTL_DIR}/%r@%h:%p -o ControlPersist=30`;
 
 export type EngineType = "vllm" | "sglang" | "none";
 
@@ -41,11 +54,18 @@ export interface EngineInfo {
 // ── Fleet ─────────────────────────────────────────────────────────────────────
 // LAN IPs are used for SSH + API reachability (they route via the router whenever
 // the node is powered, independent of the CX7 ring / preflight /32 routes). spark1
-// is the local node where the dashboard runs (no SSH, API on localhost).
-// 2026-08-07: verified ALL LAN IPs by live SSH probe from spark1 (hostname match).
-// spark2 stayed on .45 (a 2026-08-02 note claiming a DHCP move to .100 was wrong —
-// .100 times out). spark4 is up again and answers on .66 (the earlier "stale
-// .66 / unrelated device" note was itself stale).
+// is addressed separately, via SPARK1_HOST/SPARK1_API below — it is only "local"
+// (no SSH, API on localhost) when the dashboard actually runs on spark1, which as
+// of 2026-09-26 it does NOT: it runs on the Mac mini in remote-spark1 mode.
+// 2026-09-26: re-verified ALL LAN IPs by live SSH probe (hostname match), this
+// time from the Mac mini where the dashboard now runs. spark2 .45, spark3 .101,
+// spark4 .66 all still correct. These are DHCP leases and DO drift — spark1 itself
+// moved 10.0.0.102 → 10.0.0.223 and .102 is now a different device entirely, which
+// is why spark1 is addressed by mDNS name via CLUSTER_DASH_SPARK1_SSH rather than
+// by a baked-in IP. If a node goes OFFLINE, re-probe before assuming it is down:
+//   ssh -o ConnectTimeout=3 -o BatchMode=yes absolome@10.0.0.N hostname
+// The Spark NIC MACs are fc:9d:05:13:<suffix> where <suffix> matches the hostname
+// (edgexpert-77fd → …:77:fd), so `ip neigh` on any node identifies them reliably.
 export const NODE_LAN_IP = {
   spark2: "10.0.0.45",
   spark3: "10.0.0.101",
@@ -60,12 +80,15 @@ function envStr(k: string): string | undefined {
 export const NODE_SSH_HOST = {
   spark2: envStr("CLUSTER_DASH_SSH_SPARK2") ?? NODE_LAN_IP.spark2,
   spark3: envStr("CLUSTER_DASH_SSH_SPARK3") ?? NODE_LAN_IP.spark3,
-  // spark4 currently shares 10.0.0.66 with another LAN device, so SSH to the
-  // LAN IPv4 is nondeterministic. Its IPv6 link-local address is stable for the
-  // NIC MAC and reaches the real Spark directly. The %zone is the LOCAL egress
-  // interface, so it differs per dashboard host — override via env off-spark1
-  // (e.g. CLUSTER_DASH_SSH_SPARK4="fe80::bdc7:47ee:6b36:a9cc%en1" on the Mac).
-  spark4: envStr("CLUSTER_DASH_SSH_SPARK4") ?? "fe80::bdc7:47ee:6b36:a9cc%enP7s7",
+  // spark4 was previously pinned to an IPv6 link-local address because .66 was
+  // believed to be shared with an unrelated LAN device. That is NOT true as of
+  // 2026-09-26: `ip neigh` resolves 10.0.0.66 to fc:9d:05:13:78:33 — spark4's own
+  // NIC MAC — and SSH to it returns edgexpert-7833 from both spark1 and the Mac.
+  // The link-local default was actively harmful off-spark1: its %zone named spark1's
+  // interface (enP7s7), which does not exist on any other dashboard host, so every
+  // spark4 probe failed instantly and the node rendered OFFLINE. Plain IPv4 now.
+  // A link-local override is still honoured (CLUSTER_DASH_SSH_SPARK4="fe80::…%en1").
+  spark4: envStr("CLUSTER_DASH_SSH_SPARK4") ?? NODE_LAN_IP.spark4,
 };
 
 // ── Remote-spark1 mode ────────────────────────────────────────────────────────
@@ -111,14 +134,29 @@ const WEBUI_RE = /webui/i;
 function sshPrefix(host: string, connectTimeout = 3): string {
   const isLinkLocalV6 = host.includes("%");
   const addr = JSON.stringify(isLinkLocalV6 ? `absolome@${host}` : host);
-  const alias = host === NODE_SSH_HOST.spark4 ? " -o HostKeyAlias=spark4 -6" : "";
+  // -6 / HostKeyAlias only make sense for a link-local IPv6 target (the zone-id
+  // form has no stable host-key identity). Keying this off "is this spark4?" broke
+  // as soon as spark4 moved back to IPv4 — it forced -6 on an IPv4 address.
+  const alias = isLinkLocalV6 ? " -o HostKeyAlias=spark4 -6" : "";
   // accept-new: first contact from a fresh dashboard host must not park on a
   // host-key prompt (BatchMode has nobody to answer it); a CHANGED key still fails.
-  return `ssh -o ConnectTimeout=${connectTimeout} -o BatchMode=yes -o StrictHostKeyChecking=accept-new${alias} ${addr}`;
+  return `ssh -o ConnectTimeout=${connectTimeout} -o BatchMode=yes -o StrictHostKeyChecking=accept-new ${SSH_MUX}${alias} ${addr}`;
+}
+
+/**
+ * POSIX single-quote, so the LOCAL shell hands `inner` to ssh byte-for-byte.
+ * JSON.stringify (the previous approach) yields a DOUBLE-quoted word, and a
+ * double-quoted word still undergoes `$`, backtick and backslash expansion
+ * locally — so `awk '{print $2}'` reached the remote as `awk '{print }'` and
+ * silently returned the wrong field. It also embedded `\n` as a literal
+ * backslash-n, making multi-line remote scripts impossible.
+ */
+function shSingleQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
 export function sshCommand(inner: string, host: string, connectTimeout = 3): string {
-  return `${sshPrefix(host, connectTimeout)} ${JSON.stringify(inner)}`;
+  return `${sshPrefix(host, connectTimeout)} ${shSingleQuote(inner)}`;
 }
 
 /** Wrap a spark1-state command: ssh'd in remote-spark1 mode, verbatim when the dashboard runs on spark1. */

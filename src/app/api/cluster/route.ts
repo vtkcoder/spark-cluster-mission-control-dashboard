@@ -114,28 +114,69 @@ async function getDockerUptime(container: string, host?: string): Promise<number
   }
 }
 
-async function getDiskBytes(path: string, host?: string): Promise<number> {
+/**
+ * One-shot scan of the HF hub cache: for every `models--*` dir report its size
+ * and whether it still has `.incomplete` blobs (i.e. a download is in flight).
+ *
+ * Deliberately a SINGLE command. The previous code ran `readdirSync` plus one
+ * `du` and one `ls` per model dir — 43 child processes for the 21 cached models,
+ * and in remote-spark1 mode that meant 42 separate SSH handshakes on a 3-second
+ * poll. It also read the cache off the LOCAL filesystem, so off-spark1 the dir
+ * listing was simply empty and the download panel never showed anything.
+ */
+async function scanHfCache(
+  root: string,
+  host?: string,
+): Promise<{ key: string; bytes: number; incomplete: boolean }[]> {
+  // -sk not -sb: the no-host branch may run on macOS (BSD du has no -b);
+  // KB × 1024 is close enough for the download-progress gauges.
+  const inner = [
+    `cd '${root}' 2>/dev/null || exit 0`,
+    `for d in models--*; do`,
+    `  [ -d "$d" ] || continue`,
+    `  kb=$(du -sk "$d" 2>/dev/null | awk '{print $1}')`,
+    `  inc=$(ls "$d/blobs" 2>/dev/null | grep -c '\\.incomplete')`,
+    `  printf '%s\\t%s\\t%s\\n' "$d" "\${kb:-0}" "\${inc:-0}"`,
+    `done`,
+  ].join("\n");
   try {
-    // -sk not -sb: the no-host branch may run on macOS (BSD du has no -b);
-    // KB × 1024 is close enough for the download-progress gauges.
-    const cmd = `du -sk '${path}' 2>/dev/null | awk '{print $1}'`;
-    const full = host ? sshCommand(cmd, host) : cmd;
-    const { stdout } = await execAsync(full, { timeout: 15000 });
-    return (parseInt(stdout.trim()) || 0) * 1024;
+    const full = host ? sshCommand(inner, host, 5) : inner;
+    const { stdout } = await execAsync(full, { timeout: 60000, maxBuffer: 4 * 1024 * 1024 });
+    return stdout
+      .split("\n")
+      .map((l) => l.split("\t"))
+      .filter((p) => p.length === 3 && p[0].startsWith("models--"))
+      .map(([key, kb, inc]) => ({
+        key,
+        bytes: (parseInt(kb, 10) || 0) * 1024,
+        incomplete: (parseInt(inc, 10) || 0) > 0,
+      }));
   } catch {
-    return 0;
+    return [];
   }
 }
 
-async function hasIncompleteBlobs(path: string, host?: string): Promise<boolean> {
-  try {
-    const cmd = `ls '${path}/blobs/' 2>/dev/null | grep -c '\\.incomplete' || echo 0`;
-    const full = host ? sshCommand(cmd, host) : cmd;
-    const { stdout } = await execAsync(full, { timeout: 3000 });
-    return parseInt(stdout.trim()) > 0;
-  } catch {
-    return false;
+// `du` over the whole hub cache walks a few TB of weights and takes ~6s — far
+// longer than the dashboard's 3-second poll, so it must never be on the request
+// path. Model sizes only move while a download runs, so serve the last scan and
+// refresh it in the background at most once per TTL.
+type HfEntry = { key: string; bytes: number; incomplete: boolean };
+const HF_SCAN_TTL_MS = 60_000;
+let hfScan: { at: number; entries: HfEntry[] } = { at: 0, entries: [] };
+let hfScanInflight = false;
+
+function hfCacheSnapshot(root: string, host?: string): HfEntry[] {
+  if (!hfScanInflight && Date.now() - hfScan.at > HF_SCAN_TTL_MS) {
+    hfScanInflight = true;
+    const startedAt = Date.now();
+    scanHfCache(root, host)
+      // Stamp `at` on failure too, so an unreachable spark1 backs off instead of
+      // launching a fresh scan on every poll.
+      .then((entries) => { hfScan = { at: startedAt, entries }; })
+      .catch(() => { hfScan = { at: startedAt, entries: hfScan.entries }; })
+      .finally(() => { hfScanInflight = false; });
   }
+  return hfScan.entries;
 }
 
 async function getNetworkRx(iface: string, host?: string): Promise<number> {
@@ -148,8 +189,6 @@ async function getNetworkRx(iface: string, host?: string): Promise<number> {
     return 0;
   }
 }
-
-import { readdirSync } from "fs";
 
 // ── Download speed tracking (module-level cache) ──────────────────────────────
 let prevRx: { spark1: number; spark2: number; ts: number } | null = null;
@@ -181,20 +220,18 @@ export async function GET() {
   const w2Spec = engine.containers.find((c) => c.key === "worker2");
   const w3Spec = engine.containers.find((c) => c.key === "worker3"); // absent on the 3-node PP=3 topology
 
-  // Auto-discover all model dirs in the HF cache
-  let cacheDirs: string[] = [];
-  try { cacheDirs = readdirSync(HF_HUB).filter((d) => d.startsWith("models--")); } catch { /* ok */ }
-
-  const modelChecks = await Promise.all(
-    cacheDirs.map(async (key) => {
-      const model = cacheKeyToModelId(key);
-      const dir = `${HF_HUB}/${key}`;
-      const bytes = await getDiskBytes(dir);
-      const active = await hasIncompleteBlobs(dir);
-      const expectedBytes = KNOWN_EXPECTED_BYTES[model] ?? 0;
-      return { model, dir, bytes, active, expectedBytes };
-    })
-  );
+  // Auto-discover all model dirs in the HF cache. The cache lives on spark1, so
+  // this is read over SSH whenever the dashboard runs elsewhere.
+  const modelChecks = hfCacheSnapshot(HF_HUB, SPARK1_HOST).map((e) => {
+    const model = cacheKeyToModelId(e.key);
+    return {
+      model,
+      dir: `${HF_HUB}/${e.key}`,
+      bytes: e.bytes,
+      active: e.incomplete,
+      expectedBytes: KNOWN_EXPECTED_BYTES[model] ?? 0,
+    };
+  });
 
   const [
     spark1,

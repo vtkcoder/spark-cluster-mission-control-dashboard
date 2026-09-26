@@ -9,11 +9,27 @@
 > dashboard adapts.** Candidate API ports are env-overridable via `CLUSTER_DASH_API_PORTS`
 > (default `8001,8000,30000,11434`); fleet nodes are `FLEET` in engine.ts.
 >
-> **What's live now:** engine **vLLM**, container **`vllm_node`**, head = **spark1 (local)** + worker =
-> **spark2**, **TP=2**, OpenAI API on **spark1 `10.0.0.102:8001`** (= localhost:8001; **port 8001**, not
-> 8000 — 8000 is the restic rest-server), serving **`deepseek-ai/DeepSeek-V4-Flash`** over a direct
-> CX7 RoCE cable (`enp1s0f0np0`/`rocep1s0f0`, `192.168.100.10/.11`). The dashboard runs on spark1,
-> reaches the API over LAN and containers over SSH. **Launch/stop is NOT via the old
+> **⚠️ THE DASHBOARD NO LONGER RUNS ON SPARK1 (verified 2026-09-26).** It runs on the **Mac mini**
+> (`absolomes-Mac-mini`, `10.0.0.7`) under **PM2 id 0 `cluster-dash`**, cwd `~/sites/cluster-dash`,
+> port **3099**. spark1's PM2 has no `cluster-dash` entry at all. Because of that, **remote-spark1
+> mode is mandatory here** — `.env.local` must set `CLUSTER_DASH_SPARK1_SSH` (and
+> `CLUSTER_DASH_SPARK1_API`), or every "spark1" command silently runs against macOS and spark1
+> renders OFFLINE. Build/restart from the Mac: `npm run build && pm2 restart cluster-dash --update-env`
+> (`--update-env` matters — PM2 caches env across plain restarts).
+>
+> **LAN IPs are DHCP and they drift.** spark1 moved **10.0.0.102 → 10.0.0.223**, and .102 is now an
+> unrelated device — so never trust a baked-in IP. spark1 is addressed by mDNS
+> (`edgexpert-74a6.local`) which follows the lease. Current, re-probed 2026-09-26: spark1 **.223**
+> (mDNS + Tailscale `100.79.103.61`), spark2 **.45**, spark3 **.101**, spark4 **.66**. To re-identify a
+> node: Spark NIC MACs are `fc:9d:05:13:<hostname-suffix>` (edgexpert-77fd → `…:77:fd`), so
+> `ip neigh` on any node maps IP→node reliably.
+>
+> **What's live now:** engine **vLLM**, container **`vllm_node`**, head = **spark1** + worker =
+> **spark3** (NOT spark2 — spark2 and spark4 are up but idle), **TP=2**, OpenAI API on **spark1
+> `:8001`** (**port 8001**, not 8000 — 8000 is the restic rest-server), serving
+> **`deepseek-ai/DeepSeek-V4-Flash-0731`** over CX7 RoCE (`enp1s0f0np0`/`rocep1s0f0`) on the
+> **`192.168.177.0/24`** ring — spark1 `.11`, spark3 `.13` (the old `192.168.100.x` addresses are
+> historical). **Launch/stop is NOT via the old
 > `~/research/run-vllm-*` scripts** — it's the spark-arena tooling:
 > `cd ~/spark-arena/spark-vllm-docker && ./run-recipe.sh deepseek-v4-flash --no-ray --port 8001`.
 > **Full model runbook: `~/research/deepseek-v4-flash-2node-runbook.md`** (also logged in
@@ -54,7 +70,7 @@ LAN: `enP7s7` on spark1 at 10.0.0.102 via router 10.0.0.1. spark2/3/4 via the sa
 
 | Service | Host | Port | Manager |
 |---|---|---|---|
-| cluster-dash (this app) | spark1 | 3099 | PM2 (id 10) |
+| cluster-dash (this app) | **Mac mini** (not spark1) | 3099 | PM2 (id 0) |
 | vllm-head | spark1 | 11434 | Docker |
 | vllm-worker | spark2 | 11434 | Docker (via SSH) — PP=4 rank 1 |
 | vllm-worker | spark3 | 11434 | Docker (via SSH) — PP=4 rank 2 |
