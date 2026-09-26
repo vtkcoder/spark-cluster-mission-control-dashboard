@@ -1,9 +1,14 @@
-// Postgres access for cluster-dash (Model Manager metadata).
-// System PG 16, local peer auth as `absolome` via socket. One DB per project.
+// Postgres access for cluster-dash (Model Manager metadata). One DB per project.
+// The DB is always LOCAL to whichever machine runs the dashboard — since
+// 2026-09-18 that is the Mac mini (Homebrew PG 17), not spark1's PG 16.
 import { Pool } from "pg";
 
-const DEFAULT_URL =
-  "postgresql://absolome@localhost:5432/cluster_dash?host=/var/run/postgresql";
+// Plain TCP to localhost, NOT a socket path. The old default hardcoded
+// `?host=/var/run/postgresql`, which is a Linux-only path: on macOS (Homebrew
+// puts its socket in /tmp) every query failed with ENOENT, and it did so even
+// when .env.local was correct, because vitest does not load .env.local.
+// Override per host with DATABASE_URL.
+const DEFAULT_URL = "postgresql://absolome@localhost:5432/cluster_dash";
 
 // Reuse a single Pool across hot-reloads / requests.
 const g = globalThis as unknown as { __clusterDashPool?: Pool };
@@ -69,6 +74,42 @@ CREATE TABLE IF NOT EXISTS model_event (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS model_event_model_idx ON model_event (node, model_id, created_at);
+
+-- Retrofit primary keys. CREATE TABLE IF NOT EXISTS is a no-op on an existing
+-- table, so a table that came in WITHOUT its PK stays that way forever — which
+-- is exactly what the 2026-09-18 spark1 → Mac mini dump/restore produced: all
+-- three tables arrived with their indexes but no constraints. The model_meta one
+-- is not cosmetic: upsertMeta's ON CONFLICT (node, model_id) needs a matching
+-- unique constraint, so without it EVERY tag/note/rating/star write threw
+-- "there is no unique or exclusion constraint matching the ON CONFLICT
+-- specification". Each repair is guarded so a pre-existing duplicate row
+-- degrades to a warning instead of breaking ensureSchema for the whole app.
+DO $do$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                 WHERE conrelid = 'model_meta'::regclass AND contype = 'p') THEN
+    ALTER TABLE model_meta ADD PRIMARY KEY (node, model_id);
+  END IF;
+EXCEPTION WHEN others THEN RAISE WARNING 'model_meta PK repair skipped: %', SQLERRM;
+END $do$;
+
+DO $do$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                 WHERE conrelid = 'model_comment'::regclass AND contype = 'p') THEN
+    ALTER TABLE model_comment ADD PRIMARY KEY (id);
+  END IF;
+EXCEPTION WHEN others THEN RAISE WARNING 'model_comment PK repair skipped: %', SQLERRM;
+END $do$;
+
+DO $do$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                 WHERE conrelid = 'model_event'::regclass AND contype = 'p') THEN
+    ALTER TABLE model_event ADD PRIMARY KEY (id);
+  END IF;
+EXCEPTION WHEN others THEN RAISE WARNING 'model_event PK repair skipped: %', SQLERRM;
+END $do$;
 `;
 
 let schemaReady: Promise<void> | null = null;
