@@ -104,13 +104,18 @@ LAN: `enP7s7` on spark1 at 10.0.0.223 via router 10.0.0.1, then through the TP-L
 `192.168.178.0/24`. The five dead subnets it used to list (`192.168.99/100/101/102/103.0/24`) are
 gone. All HF downloads happen on spark1; spark2/3/4 read weights over NFS during inference.
 
-The old boot-ordering failure is fixed: all three worker mounts are now
-`x-systemd.automount,nofail`, so they mount lazily on first access and can no longer fail at boot.
-They had in fact been failing at **every** boot since 2026-09-13 and were repaired 2026-09-27 —
-spark3 mounts over the 200G fabric (`spark1:`), spark2 and spark4 over the LAN (`spark1-lan:`),
-because spark4 is on the opposite fabric island from spark1. Gotcha if you audit this: spark2
-connects sourced from its **Wi-Fi** address, which is why the export list includes `10.0.0.54` —
-omitting it produces `access denied by server`.
+**⚠️ DO NOT "fix" the HF-cache mounts on spark3/spark4 — they are disabled on purpose.** Each of
+those nodes holds a **local** HF cache (877 GB / 1018 GB, each with its own 156 GB copy of
+DeepSeek-V4-Flash-0731). Their `fstab` lines mounted spark1's cache on top, so a working mount
+**shadows the local weights**. The recipe requires every node to load from its OWN cache, and local
+NVMe beats NFS over 1 Gb by a wide margin. spark2's line was disabled for this exact reason on
+2026-08-01; spark3's and spark4's were briefly enabled on 2026-09-27 and reverted the same day.
+The mounts failing at boot was load-bearing, not a bug.
+
+`/home/absolome/shared` on spark2 **is** a real mount and stays (`x-systemd.automount,nofail`, so
+boot ordering can't break it). Gotcha if you audit the exports: spark2 connects sourced from its
+**Wi-Fi** address, which is why the list includes `10.0.0.54` — omit it and you get
+`access denied by server`.
 
 ---
 
