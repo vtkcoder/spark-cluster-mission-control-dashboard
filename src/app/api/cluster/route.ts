@@ -2,7 +2,7 @@ import { exec } from "child_process";
 import { promisify } from "util";
 import { writeFileSync, existsSync } from "fs";
 import { NextResponse } from "next/server";
-import { detectEngine, getEngineModels, getEngineMetrics, getSglangThroughput, NODE_LAN_IP, NODE_SSH_HOST, SPARK1_HOST, sshCommand } from "@/lib/engine";
+import { detectEngine, getEngineModels, getEngineMetrics, getSglangThroughput, NODE_SSH_HOST, SPARK1_HOST, sshCommand } from "@/lib/engine";
 
 export const dynamic = "force-dynamic";
 

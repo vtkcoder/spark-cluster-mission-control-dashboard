@@ -10,19 +10,26 @@
 > (default `8001,8000,30000,11434`); fleet nodes are `FLEET` in engine.ts.
 >
 > **⚠️ THE DASHBOARD NO LONGER RUNS ON SPARK1 (verified 2026-09-26).** It runs on the **Mac mini**
-> (`absolomes-Mac-mini`, `10.0.0.7`) under **PM2 id 0 `cluster-dash`**, cwd `~/sites/cluster-dash`,
+> (`absolomes-Mac-mini`, `10.0.0.140`, Tailscale `100.96.8.98`) under **PM2 id 0 `cluster-dash`**, cwd `~/sites/cluster-dash`,
 > port **3099**. spark1's PM2 has no `cluster-dash` entry at all. Because of that, **remote-spark1
 > mode is mandatory here** — `.env.local` must set `CLUSTER_DASH_SPARK1_SSH` (and
 > `CLUSTER_DASH_SPARK1_API`), or every "spark1" command silently runs against macOS and spark1
 > renders OFFLINE. Build/restart from the Mac: `npm run build && pm2 restart cluster-dash --update-env`
 > (`--update-env` matters — PM2 caches env across plain restarts).
 >
-> **LAN IPs are DHCP and they drift.** spark1 moved **10.0.0.102 → 10.0.0.223**, and .102 is now an
-> unrelated device — so never trust a baked-in IP. spark1 is addressed by mDNS
-> (`edgexpert-74a6.local`) which follows the lease. Current, re-probed 2026-09-26: spark1 **.223**
-> (mDNS + Tailscale `100.79.103.61`), spark2 **.45**, spark3 **.101**, spark4 **.66**. To re-identify a
-> node: Spark NIC MACs are `fc:9d:05:13:<hostname-suffix>` (edgexpert-77fd → `…:77:fd`), so
-> `ip neigh` on any node maps IP→node reliably.
+> **⚠️ ADDRESSING IS TAILSCALE-ONLY SINCE 2026-09-27 — do not put LAN IPs back.** All node
+> addresses live in **`src/lib/nodes.ts`** (`NODES`, `displayAddr()`), imported by both the server
+> and the `"use client"` components so a card can never display an address the server isn't
+> dialling. Two reasons the LAN is no longer used: (1) all four Sparks sit behind a **TP-Link
+> extender at `10.0.0.39` in REPEATER mode** which ARP-proxies every Spark LAN IP with its own MAC
+> (`ba:07:1d:0a:a2:4e`), emits gratuitous broadcast ARP, and MAC-translates in both directions —
+> from the Mac that means 3ms → 190ms spikes and intermittent loss, i.e. **nodes rendering OFFLINE
+> while perfectly healthy**; (2) the LAN IPs are DHCP with no reservations and they drift (spark1
+> went `10.0.0.102 → 10.0.0.223`, and `.102` became an unrelated device). mDNS is **not** an option
+> fleet-wide — the extender blocks it for spark2/3/4, so `edgexpert-*.local` only ever worked for
+> spark1. **If a node renders OFFLINE, run `tailscale status` first** (all four should read `direct`,
+> not `relay`). To re-identify a node on the LAN: NIC MACs are `fc:9d:05:13:<hostname-suffix>`
+> (edgexpert-77fd → `…:77:fd`), so `ip neigh` on any node maps IP→node.
 >
 > **What's live now:** engine **vLLM**, container **`vllm_node`**, head = **spark1** + worker =
 > **spark3** (NOT spark2 — spark2 and spark4 are up but idle), **TP=2**, OpenAI API on **spark1
@@ -49,20 +56,61 @@ Your two responsibilities, in priority order:
 
 ## Cluster Hardware
 
-| Node | Hostname | LAN IP | Virtual IP (cluster) | Tailscale IP |
-|---|---|---|---|---|
-| spark1 (master) | edgexpert-74a6 | 10.0.0.102 | 192.168.99.10 | 100.79.103.61 |
-| spark2 (worker) | edgexpert-77fd | 10.0.0.45 | 192.168.99.11 | — |
-| spark3 (worker) | edgexpert-88dd | 10.0.0.101 | 192.168.99.12 | — |
-| spark4 (worker) | edgexpert-7833 | 10.0.0.66 | 192.168.99.13 | — |
+**Tailscale is the address the dashboard uses.** LAN and Wi-Fi columns are reference only.
+Re-verified by live SSH hostname probe 2026-09-27.
+
+| Node | Hostname | **Tailscale (use this)** | LAN (eth, DHCP) | Wi-Fi (DHCP) | Fabric rail A / B |
+|---|---|---|---|---|---|
+| spark1 (master) | edgexpert-74a6 | `100.79.103.61` | 10.0.0.223 | — (`OobeHotspot`, 10.92.7.x — stray) | 192.168.177.11 / 192.168.178.11 |
+| spark2 (worker) | edgexpert-77fd | `100.112.35.83` | 10.0.0.45 | 10.0.0.54 | 192.168.177.12 / 192.168.178.12 |
+| spark3 (worker) | edgexpert-88dd | `100.71.243.12` | 10.0.0.101 | 10.0.0.100 | 192.168.177.13 / 192.168.178.13 |
+| spark4 (worker) | edgexpert-7833 | `100.123.85.111` | 10.0.0.66 | 10.0.0.67 | 192.168.177.14 / 192.168.178.14 |
+
+**`192.168.99.10-13` does not exist and has not since the 2026-07-21 fabric renumber.** It survived
+for months as hardcoded display labels on the node cards while the app actually connected elsewhere
+— removed 2026-09-27. Do not reintroduce it. Likewise dead: `10.0.0.220`, `10.0.0.102`,
+`192.168.102.10`, and the `192.168.100/101/102/103.0/24` link subnets.
+Note the Wi-Fi addresses are real Spark interfaces — `10.0.0.100` is spark3's radio, not a dead IP.
 
 Each node: **NVIDIA DGX Spark** — GB10 Grace Blackwell SoC, 128 GB unified CPU+GPU memory (not separate pools — one physical pool shared by CPU and GPU). Total cluster memory: 512 GB.
 
-CX7 links (4-node **RING**, re-cabled 2026-06-06 — NOT a full mesh; 2 ports/node can't mesh 4 nodes): `spark1 –A:100– spark2 –B:101– spark3 –C:103– spark4 –D:102– spark1`, each a 200G QSFP56 DAC point-to-point /24 via `enp1s0f0np0`/`enp1s0f1np1`. Each node has a virtual `/32` on `192.168.99.0/24`; the two non-adjacent ("diagonal") node pairs are reached via IP-forwarding + transit routes on the in-between node. MTU 9000 throughout. **Bring-up after any reboot: `~/research/cluster-4node-preflight.sh`** (sets IPs/routes/forwarding + mounts NFS + restores patches — none of that persists a reboot). Full detail: `~/server-board.md` 2026-06-06 + `~/research/3-spark-cluster-runbook.md` banner.
+**⚠️ THE 200G FABRIC IS SPLIT INTO TWO ISLANDS — it is NOT a ring (measured 2026-09-27).**
+All-pairs ping on both rails (`192.168.177.0/24` and `192.168.178.0/24`) gives the same partition:
 
-LAN: `enP7s7` on spark1 at 10.0.0.102 via router 10.0.0.1. spark2/3/4 via the same router.
+| from \ to | spark1 | spark2 | spark3 | spark4 |
+|---|---|---|---|---|
+| **spark1** | — | ✗ | ✓ | ✗ |
+| **spark2** | ✗ | — | ✗ | ✓ |
+| **spark3** | ✓ | ✗ | — | ✗ |
+| **spark4** | ✗ | ✓ | ✗ | — |
 
-**NFS**: spark1 exports `/home/absolome/.cache/huggingface` to `192.168.99.0/24` plus the CX7 link subnets `192.168.100/101/102/103.0/24`. All four nodes mount it at the same path. All HF model downloads happen on spark1 only — spark2/3/4 read weights via NFS during inference. NOTE: the `_netdev` fstab mount fails at boot (CX7 routes don't exist yet) — the pre-flight script re-mounts it; if a worker shows OFFLINE or "model not found", check the mount first.
+`{spark1, spark3}` and `{spark2, spark4}`, with **no path between the pairs on either rail**. Only
+4 QSFP cables exist, 2 per node, doubling up each pair; `enp1s0f1np1` and `enP2p1s0f1np1` have no
+cable on any node. All active links are up at 200000 Mb with MTU 9000 verified
+(`ping -M do -s 8972` clean). The NICs are fine — it is the cabling.
+
+**Consequence for multi-node jobs: pair spark1+spark3 or spark2+spark4 — NEVER spark1+spark2.**
+Those two have no fast link, so TP/PP across them silently falls back to `enP7s7`, which negotiates
+only **1000 Mb** (the switch caps it; the NIC itself supports `10000baseT/Full`) and runs through
+the extender. 4-node over the fast fabric needs a QSFP switch — 2 ports/node cannot mesh 4 hosts.
+
+LAN: `enP7s7` on spark1 at 10.0.0.223 via router 10.0.0.1, then through the TP-Link extender.
+`/etc/hosts` on every node maps bare `spark1..spark4` to **fabric rail A**, so from spark1 the name
+`spark2` is unreachable. Use `spark{1..4}-lan` (10.0.0.x, always reachable) or `-f2` (rail B), added
+2026-09-27.
+
+**NFS** (exports rewritten 2026-09-27): spark1 exports `/home/absolome/.cache/huggingface` and
+`/home/absolome/shared` to the live Spark eth **and** Wi-Fi addresses plus `192.168.177.0/24` and
+`192.168.178.0/24`. The five dead subnets it used to list (`192.168.99/100/101/102/103.0/24`) are
+gone. All HF downloads happen on spark1; spark2/3/4 read weights over NFS during inference.
+
+The old boot-ordering failure is fixed: all three worker mounts are now
+`x-systemd.automount,nofail`, so they mount lazily on first access and can no longer fail at boot.
+They had in fact been failing at **every** boot since 2026-09-13 and were repaired 2026-09-27 —
+spark3 mounts over the 200G fabric (`spark1:`), spark2 and spark4 over the LAN (`spark1-lan:`),
+because spark4 is on the opposite fabric island from spark1. Gotcha if you audit this: spark2
+connects sourced from its **Wi-Fi** address, which is why the export list includes `10.0.0.54` —
+omitting it produces `access denied by server`.
 
 ---
 

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { fmtBytes } from "@/lib/utils";
+import { displayAddr } from "@/lib/nodes";
 
 interface ProcessInfo {
   pid: number;
@@ -504,7 +505,7 @@ export function SystemTasksPanel({ data, loading, singleNode = false }: SystemTa
       <NodeTasksColumn
         label="SPARK1"
         role="DEV · NFS"
-        ip="192.168.99.10"
+        ip={displayAddr("spark1")}
         data={data.spark1}
       />
       {!singleNode && (
@@ -512,19 +513,19 @@ export function SystemTasksPanel({ data, loading, singleNode = false }: SystemTa
           <NodeTasksColumn
             label="SPARK2"
             role="HEAD · rank0"
-            ip="192.168.99.11"
+            ip={displayAddr("spark2")}
             data={data.spark2}
           />
           <NodeTasksColumn
             label="SPARK3"
             role="rank1"
-            ip="192.168.99.12"
+            ip={displayAddr("spark3")}
             data={data.spark3}
           />
           <NodeTasksColumn
             label="SPARK4"
             role="rank2"
-            ip="192.168.99.13"
+            ip={displayAddr("spark4")}
             data={data.spark4}
           />
         </>

@@ -15,6 +15,7 @@
 import { exec } from "child_process";
 import { promisify } from "util";
 import { mkdirSync } from "fs";
+import { NODES, type NodeKey } from "./nodes";
 
 const execAsync = promisify(exec);
 
@@ -57,38 +58,25 @@ export interface EngineInfo {
 // is addressed separately, via SPARK1_HOST/SPARK1_API below — it is only "local"
 // (no SSH, API on localhost) when the dashboard actually runs on spark1, which as
 // of 2026-09-26 it does NOT: it runs on the Mac mini in remote-spark1 mode.
-// 2026-09-26: re-verified ALL LAN IPs by live SSH probe (hostname match), this
-// time from the Mac mini where the dashboard now runs. spark2 .45, spark3 .101,
-// spark4 .66 all still correct. These are DHCP leases and DO drift — spark1 itself
-// moved 10.0.0.102 → 10.0.0.223 and .102 is now a different device entirely, which
-// is why spark1 is addressed by mDNS name via CLUSTER_DASH_SPARK1_SSH rather than
-// by a baked-in IP. If a node goes OFFLINE, re-probe before assuming it is down:
-//   ssh -o ConnectTimeout=3 -o BatchMode=yes absolome@10.0.0.N hostname
-// The Spark NIC MACs are fc:9d:05:13:<suffix> where <suffix> matches the hostname
-// (edgexpert-77fd → …:77:fd), so `ip neigh` on any node identifies them reliably.
-export const NODE_LAN_IP = {
-  spark2: "10.0.0.45",
-  spark3: "10.0.0.101",
-  spark4: "10.0.0.66",
-} as const;
+// 2026-09-27: addressing moved off the LAN entirely and onto Tailscale. The LAN
+// path runs through a TP-Link extender in repeater mode that ARP-proxies every
+// Spark IP and drops packets, and the LAN IPs are drifting DHCP leases. Both the
+// addresses and the full rationale now live in ./nodes, which the client
+// components import too so a card can never display an address the server is not
+// actually dialling. If a node renders OFFLINE, check `tailscale status` first.
 
 function envStr(k: string): string | undefined {
   const v = process.env[k]?.trim();
   return v ? v : undefined;
 }
 
+// Per-node SSH target. Defaults to the Tailscale address; each is still
+// env-overridable for recovery (e.g. CLUSTER_DASH_SSH_SPARK4="10.0.0.66" to fall
+// back to the LAN, or a link-local "fe80::…%en1" form) without a code change.
 export const NODE_SSH_HOST = {
-  spark2: envStr("CLUSTER_DASH_SSH_SPARK2") ?? NODE_LAN_IP.spark2,
-  spark3: envStr("CLUSTER_DASH_SSH_SPARK3") ?? NODE_LAN_IP.spark3,
-  // spark4 was previously pinned to an IPv6 link-local address because .66 was
-  // believed to be shared with an unrelated LAN device. That is NOT true as of
-  // 2026-09-26: `ip neigh` resolves 10.0.0.66 to fc:9d:05:13:78:33 — spark4's own
-  // NIC MAC — and SSH to it returns edgexpert-7833 from both spark1 and the Mac.
-  // The link-local default was actively harmful off-spark1: its %zone named spark1's
-  // interface (enP7s7), which does not exist on any other dashboard host, so every
-  // spark4 probe failed instantly and the node rendered OFFLINE. Plain IPv4 now.
-  // A link-local override is still honoured (CLUSTER_DASH_SSH_SPARK4="fe80::…%en1").
-  spark4: envStr("CLUSTER_DASH_SSH_SPARK4") ?? NODE_LAN_IP.spark4,
+  spark2: envStr("CLUSTER_DASH_SSH_SPARK2") ?? NODES.spark2.ts,
+  spark3: envStr("CLUSTER_DASH_SSH_SPARK3") ?? NODES.spark3.ts,
+  spark4: envStr("CLUSTER_DASH_SSH_SPARK4") ?? NODES.spark4.ts,
 };
 
 // ── Remote-spark1 mode ────────────────────────────────────────────────────────
@@ -106,14 +94,13 @@ export const SPARK1_PM2 = SPARK1_HOST
   ? (envStr("CLUSTER_DASH_SPARK1_PM2") ?? "/home/absolome/.npm-global/bin/pm2")
   : "pm2";
 
-type NodeKey = "spark1" | "spark2" | "spark3" | "spark4";
 interface FleetNode { key: NodeKey; host?: string; apiHost: string }
 
 const FLEET: FleetNode[] = [
   { key: "spark1", host: SPARK1_HOST,          apiHost: SPARK1_API },
-  { key: "spark2", host: NODE_SSH_HOST.spark2, apiHost: NODE_LAN_IP.spark2 },
-  { key: "spark3", host: NODE_SSH_HOST.spark3, apiHost: NODE_LAN_IP.spark3 },
-  { key: "spark4", host: NODE_SSH_HOST.spark4, apiHost: NODE_LAN_IP.spark4 },
+  { key: "spark2", host: NODE_SSH_HOST.spark2, apiHost: NODES.spark2.ts },
+  { key: "spark3", host: NODE_SSH_HOST.spark3, apiHost: NODES.spark3.ts },
+  { key: "spark4", host: NODE_SSH_HOST.spark4, apiHost: NODES.spark4.ts },
 ];
 
 // Candidate OpenAI-API ports to probe when the port can't be read from the live

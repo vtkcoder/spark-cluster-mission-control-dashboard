@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { NodeCard } from "@/components/NodeCard";
+import { displayAddr } from "@/lib/nodes";
 import { KpiBar } from "@/components/KpiBar";
 import { VllmPanel } from "@/components/VllmPanel";
 import { SystemTasksPanel } from "@/components/SystemTasksPanel";
@@ -470,7 +471,7 @@ export default function DashPage() {
                 <NodeCard
                   label="SPARK1"
                   role="MASTER"
-                  ip="192.168.99.10"
+                  ip={displayAddr("spark1")}
                   data={data?.nodes.spark1 ?? null}
                   history={history.spark1}
                 />
@@ -481,21 +482,21 @@ export default function DashPage() {
                     <NodeCard
                       label="SPARK2"
                       role="WORKER"
-                      ip="192.168.99.11"
+                      ip={displayAddr("spark2")}
                       data={data?.nodes.spark2 ?? null}
                       history={history.spark2}
                     />
                     <NodeCard
                       label="SPARK3"
                       role="WORKER"
-                      ip="192.168.99.12"
+                      ip={displayAddr("spark3")}
                       data={data?.nodes.spark3 ?? null}
                       history={history.spark3}
                     />
                     <NodeCard
                       label="SPARK4"
                       role="WORKER"
-                      ip="192.168.99.13"
+                      ip={displayAddr("spark4")}
                       data={data?.nodes.spark4 ?? null}
                       history={history.spark4}
                     />
@@ -653,7 +654,7 @@ export default function DashPage() {
             SPARK CLUSTER MISSION CONTROL · poll interval 3s
           </div>
           <div style={{ fontSize: 9, color: "#1e293b", letterSpacing: "0.1em" }}>
-            spark1 192.168.99.10 · spark2 192.168.99.11 · spark3 192.168.99.12 · spark4 192.168.99.13 ·{" "}
+            {`spark1 ${displayAddr("spark1")} · spark2 ${displayAddr("spark2")} · spark3 ${displayAddr("spark3")} · spark4 ${displayAddr("spark4")}`} ·{" "}
             {data?.engine && data.engine.type !== "none"
               ? `${data.engine.label} :${data.engine.port}`
               : "engine offline"}
