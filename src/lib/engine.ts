@@ -8,9 +8,16 @@
 //   3. Probe the OpenAI `/v1/models` endpoint to confirm which node is the head
 //      and which port answers.
 // This handles ALL of the historical shapes with no code change:
-//   • current : container `vllm_node`, head = spark1 (local) + worker spark2, :8001, TP=2
+//   • current : container `vllm_node`, head = spark1 + worker spark3, :8001, TP=2
 //   • prior   : container `vllm-mm` / `sglang`, head = spark2, :30000, PP=3
 //   • legacy  : container `vllm-head`/`vllm-worker`, head = spark1, :11434, PP=4
+// These are DESCRIPTIONS of observed shapes, not configuration — nothing here pins
+// a node pair. The worker set is chosen at launch time by the spark-arena
+// `run-recipe.sh` invocation on spark1; the recipe YAML carries no node list.
+// (This comment said "worker spark2" until 2026-09-27, which was wrong twice over:
+// the last running shape was spark1+spark3, and spark1+spark2 sit on OPPOSITE 200G
+// fabric islands — see CLAUDE.md. Pairing them would silently run tensor
+// parallelism over 1 Gb Ethernet through the TP-Link extender.)
 // Server-side only (uses child_process).
 import { exec } from "child_process";
 import { promisify } from "util";
