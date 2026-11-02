@@ -7,17 +7,16 @@ interface LogData {
   source: string;
   ts: number;
   error?: string;
+  sources?: { id: string; label: string; icon: string }[];
 }
 
-const SOURCES = [
-  { id: "vllm-head",    label: "vLLM rank0 · spark2", icon: "▸" },
-  { id: "vllm-worker",  label: "vLLM rank1 · spark3", icon: "▸" },
-  { id: "vllm-worker2", label: "vLLM rank2 · spark4", icon: "▸" },
-  { id: "sglang-head",  label: "SGLang rank0 · spark2", icon: "◆" },
-  { id: "sglang-rank1", label: "SGLang rank1 · spark3", icon: "◆" },
-  { id: "sglang-rank2", label: "SGLang rank2 · spark4", icon: "◆" },
-  { id: "open-webui",   label: "Open WebUI",    icon: "▸" },
-  { id: "pm2-cluster-dash", label: "cluster-dash", icon: "⬡" },
+// Fallback list — the API replaces this with the LIVE engine layout
+// (dsv41-head on spark3, dsv41-worker on the other three). The static list is
+// only used before the first response arrives.
+const FALLBACK_SOURCES = [
+  { id: "engine-head", label: "engine head", icon: "▸" },
+  { id: "open-webui", label: "Open WebUI", icon: "▸" },
+  { id: "pm2-cluster-dash", label: "cluster-dash (pm2)", icon: "⬡" },
 ];
 
 function lineColor(line: string): string {
@@ -36,7 +35,8 @@ function lineWeight(line: string): number {
 }
 
 export function LogsPanel() {
-  const [source, setSource] = useState("vllm-head");
+  const [source, setSource] = useState("engine-head");
+  const [sources, setSources] = useState(FALLBACK_SOURCES);
   const [lines, setLines] = useState(120);
   const [data, setData] = useState<LogData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -51,6 +51,11 @@ export function LogsPanel() {
       const res = await fetch(`/api/logs?source=${encodeURIComponent(source)}&lines=${lines}`, { cache: "no-store" });
       const json: LogData = await res.json();
       setData(json);
+      if (json.sources?.length) {
+        setSources(json.sources);
+        // Keep the selection on a source that still exists.
+        if (!json.sources.some((s) => s.id === source)) setSource(json.sources[0].id);
+      }
       lastFetch.current = Date.now();
     } catch (e: unknown) {
       setData({ lines: [], source, ts: Date.now(), error: (e as Error).message });
@@ -92,7 +97,7 @@ export function LogsPanel() {
 
           {/* Source selector */}
           <div style={{ display: "flex", gap: 4 }}>
-            {SOURCES.map((s) => (
+            {sources.map((s) => (
               <button
                 key={s.id}
                 onClick={() => setSource(s.id)}

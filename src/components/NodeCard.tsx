@@ -5,25 +5,25 @@ import { SparkLine } from "./SparkLine";
 import { fmtBytes, fmtUptime, tempColor, gaugeColor, clamp } from "@/lib/utils";
 
 interface GpuData {
-  name: string;
-  memTotal: number;
-  memUsed: number;
-  util: number;
-  temp: number;
-  powerW: number;
+  name: string | null;
+  memTotal: number | null;
+  memUsed: number | null;
+  util: number | null;
+  temp: number | null;
+  powerW: number | null;
 }
 
 interface NodeData {
   hostname: string;
   online: boolean;
-  cpuPct: number;
-  cpuCores: number;
+  cpuPct: number | null;
+  cpuCores: number | null;
   memTotal: number;
-  memUsed: number;
-  diskTotal: number;
-  diskUsed: number;
-  loadAvg: [number, number, number];
-  uptime: number;
+  memUsed: number | null;
+  diskTotal: number | null;
+  diskUsed: number | null;
+  loadAvg: [number, number, number] | null;
+  uptime: number | null;
   gpu: GpuData;
 }
 
@@ -33,6 +33,8 @@ interface NodeCardProps {
   ip: string;
   data: NodeData | null;
   history: NodeData[];
+  /** Why collection failed (null when the node reported fine). */
+  error?: string | null;
 }
 
 function StatRow({
@@ -74,24 +76,26 @@ function StatRow({
   );
 }
 
-export function NodeCard({ label, role, ip, data, history }: NodeCardProps) {
+export function NodeCard({ label, role, ip, data, history, error }: NodeCardProps) {
   const online = data?.online ?? false;
 
-  const gpuUtilHistory = history.map((h) => h.gpu.util);
+  const gpuUtilHistory = history.map((h) => h.gpu.util ?? 0);
   const gpuMemHistory = history.map((h) =>
-    Math.round((h.gpu.memUsed / Math.max(h.gpu.memTotal, 1)) * 100)
+    Math.round(((h.gpu.memUsed ?? 0) / Math.max(h.gpu.memTotal ?? 1, 1)) * 100)
   );
-  const cpuHistory = history.map((h) => h.cpuPct);
+  const cpuHistory = history.map((h) => h.cpuPct ?? 0);
 
-  const gpuMemPct = data
-    ? Math.round((data.gpu.memUsed / Math.max(data.gpu.memTotal, 1)) * 100)
-    : 0;
-  const ramPct = data
-    ? Math.round((data.memUsed / Math.max(data.memTotal, 1)) * 100)
-    : 0;
-  const diskPct = data
-    ? Math.round((data.diskUsed / Math.max(data.diskTotal, 1)) * 100)
-    : 0;
+  const gpuMemPct = data?.gpu.memTotal
+    ? Math.round(((data.gpu.memUsed ?? 0) / Math.max(data.gpu.memTotal, 1)) * 100)
+    : null;
+  const ramPct =
+    data && data.memUsed !== null ? Math.round((data.memUsed / Math.max(data.memTotal, 1)) * 100) : null;
+  const diskPct =
+    data && data.diskTotal ? Math.round((data.diskUsed ?? 0) / Math.max(data.diskTotal, 1) * 100) : null;
+
+  // A metric the host cannot report stays null all the way here — render "n/a"
+  // instead of a fabricated 0.
+  const na = "n/a";
 
   return (
     <div
@@ -166,7 +170,7 @@ export function NodeCard({ label, role, ip, data, history }: NodeCardProps) {
             {data?.hostname ?? "—"} · {ip}
           </div>
         </div>
-        {data && (
+        {data && data.uptime !== null && (
           <div style={{ textAlign: "right" }}>
             <div style={{ fontSize: 10, color: "#475569" }}>UPTIME</div>
             <div style={{ fontSize: 11, color: "#94a3b8", fontWeight: 600 }}>
@@ -180,16 +184,33 @@ export function NodeCard({ label, role, ip, data, history }: NodeCardProps) {
         <div
           style={{
             display: "flex",
+            flexDirection: "column",
             alignItems: "center",
             justifyContent: "center",
+            gap: 6,
             height: 140,
             color: "#ef4444",
             fontSize: 12,
             letterSpacing: "0.08em",
-            opacity: 0.6,
+            opacity: 0.85,
           }}
         >
-          NODE OFFLINE
+          <div>NODE OFFLINE</div>
+          {error && (
+            <div
+              style={{
+                fontSize: 9,
+                letterSpacing: "0.02em",
+                color: "#f87171",
+                opacity: 0.85,
+                textAlign: "center",
+                padding: "0 12px",
+                wordBreak: "break-word",
+              }}
+            >
+              {error}
+            </div>
+          )}
         </div>
       ) : (
         <>
@@ -204,30 +225,34 @@ export function NodeCard({ label, role, ip, data, history }: NodeCardProps) {
           >
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
               <ArcGauge
-                pct={data!.gpu.util}
+                pct={data!.gpu.util ?? 0}
                 label="GPU"
-                sublabel="COMPUTE"
+                sublabel={data!.gpu.util === null ? "n/a" : "COMPUTE"}
                 size={108}
               />
-              <SparkLine data={gpuUtilHistory} color={gaugeColor(data!.gpu.util)} max={100} />
+              <SparkLine data={gpuUtilHistory} color={gaugeColor(data!.gpu.util ?? 0)} max={100} />
             </div>
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
               <ArcGauge
-                pct={gpuMemPct}
+                pct={gpuMemPct ?? 0}
                 label="VRAM"
-                sublabel={`${fmtBytes(data!.gpu.memUsed, 0)}`}
+                sublabel={
+                  gpuMemPct === null
+                    ? na
+                    : `${fmtBytes(data!.gpu.memUsed ?? 0, 0)}`
+                }
                 size={108}
               />
-              <SparkLine data={gpuMemHistory} color={gaugeColor(gpuMemPct)} max={100} />
+              <SparkLine data={gpuMemHistory} color={gaugeColor(gpuMemPct ?? 0)} max={100} />
             </div>
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
               <ArcGauge
-                pct={clamp(data!.cpuPct, 0, 100)}
+                pct={clamp(data!.cpuPct ?? 0, 0, 100)}
                 label="CPU"
-                sublabel={`${data!.cpuCores} CORES`}
+                sublabel={data!.cpuCores === null ? na : `${data!.cpuCores} CORES`}
                 size={108}
               />
-              <SparkLine data={cpuHistory} color={gaugeColor(data!.cpuPct)} max={100} />
+              <SparkLine data={cpuHistory} color={gaugeColor(data!.cpuPct ?? 0)} max={100} />
             </div>
           </div>
 
@@ -246,7 +271,8 @@ export function NodeCard({ label, role, ip, data, history }: NodeCardProps) {
               alignSelf: "flex-start",
             }}
           >
-            {data!.gpu.name} · 121.7 GiB UNIFIED
+            {data!.gpu.name ?? "GPU UNKNOWN"} ·{" "}
+            {data!.gpu.memTotal ? `${fmtBytes(data!.gpu.memTotal, 1)} UNIFIED` : "UNIFIED n/a"}
           </div>
 
           {/* Stats grid */}
@@ -254,34 +280,42 @@ export function NodeCard({ label, role, ip, data, history }: NodeCardProps) {
             <StatRow
               icon="🌡"
               label="TEMPERATURE"
-              value={`${data!.gpu.temp}°C`}
-              valueColor={tempColor(data!.gpu.temp)}
+              value={data!.gpu.temp === null ? na : `${data!.gpu.temp}°C`}
+              valueColor={data!.gpu.temp === null ? "#475569" : tempColor(data!.gpu.temp)}
             />
             <StatRow
               icon="⚡"
               label="POWER"
-              value={`${data!.gpu.powerW.toFixed(1)} W`}
-              valueColor="#f59e0b"
+              value={data!.gpu.powerW === null ? na : `${data!.gpu.powerW.toFixed(1)} W`}
+              valueColor={data!.gpu.powerW === null ? "#475569" : "#f59e0b"}
             />
             <StatRow
               icon="💾"
               label="SYSTEM RAM"
-              value={`${fmtBytes(data!.memUsed, 0)} / ${fmtBytes(data!.memTotal, 0)}`}
-              valueColor={gaugeColor(ramPct)}
-              sub={`${ramPct}%`}
+              value={
+                data!.memUsed === null
+                  ? `${fmtBytes(data!.memTotal, 0)} (n/a)`
+                  : `${fmtBytes(data!.memUsed, 0)} / ${fmtBytes(data!.memTotal, 0)}`
+              }
+              valueColor={gaugeColor(ramPct ?? 0)}
+              sub={ramPct === null ? undefined : `${ramPct}%`}
             />
             <StatRow
               icon="💿"
               label="DISK"
-              value={`${fmtBytes(data!.diskUsed, 1)} / ${fmtBytes(data!.diskTotal, 1)}`}
-              valueColor={gaugeColor(diskPct)}
-              sub={`${diskPct}%`}
+              value={
+                data!.diskTotal === null
+                  ? na
+                  : `${fmtBytes(data!.diskUsed ?? 0, 1)} / ${fmtBytes(data!.diskTotal, 1)}`
+              }
+              valueColor={gaugeColor(diskPct ?? 0)}
+              sub={diskPct === null ? undefined : `${diskPct}%`}
             />
             <StatRow
               icon="📊"
               label="LOAD AVG"
-              value={`${data!.loadAvg[0]} · ${data!.loadAvg[1]} · ${data!.loadAvg[2]}`}
-              valueColor="#64748b"
+              value={data!.loadAvg ? data!.loadAvg.join(" · ") : na}
+              valueColor={data!.loadAvg ? "#64748b" : "#475569"}
             />
           </div>
         </>

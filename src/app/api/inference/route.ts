@@ -39,10 +39,16 @@ function avgMs(sum: number, count: number): number | null {
 export async function GET() {
   const now = Date.now();
   const engine = await detectEngine();
+  // Scrape the decode throughput from the REAL head container. The old call
+  // used a hardcoded ("sglang", spark2) default, which no longer exists now
+  // that the cluster runs `dsv41-head` on spark3.
+  const headSpec = engine.containers.find((c) => c.key === "head");
   const [metrics, modelInfo, sgTokS] = await Promise.all([
     fetchMetrics(engine.apiHost, engine.port, engine.metricsPrefix),
     getEngineModels(engine.apiHost, engine.port),
-    engine.type === "sglang" ? getSglangThroughput() : Promise.resolve(null),
+    engine.type === "sglang" && headSpec
+      ? getSglangThroughput(headSpec.name, headSpec.host)
+      : Promise.resolve(null),
   ]);
   const model = modelInfo?.model ?? null;
   const online = model !== null;

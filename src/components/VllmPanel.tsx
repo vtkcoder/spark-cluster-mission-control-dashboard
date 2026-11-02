@@ -29,7 +29,11 @@ interface EngineData {
   topology: string;
   parallel: string;
   kvDtype: string;
-  containers: { key: string; label: string }[];
+  containers: { key: string; label: string; name?: string; node?: string | null; rank?: number | null }[];
+  headNode?: string | null;
+  nodes?: string[];
+  detected?: boolean;
+  note?: string | null;
 }
 
 interface VllmPanelProps {
@@ -71,6 +75,13 @@ export function VllmPanel({ data, engine, cacheHistory, reqHistory }: VllmPanelP
   const isSg = engine.type === "sglang";
   const accent = isSg ? "#22d3ee" : "#8b5cf6";
 
+  // The live engine roster: one entry per rank, with the node it runs on and
+  // the container that carries it. A 4-node TP launch has four entries — the
+  // old panel only ever had room for head + one worker.
+  const roster = engine.containers.filter((c) => c.key !== "webui");
+  const stateOf = (key: string): string =>
+    (data.containers as Record<string, string | undefined>)[key] ?? "absent";
+
   return (
     <div style={{ background: "#0c1220", border: "1px solid #1a2540", borderRadius: 12, padding: 16, position: "relative", overflow: "hidden" }}>
       <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 2, background: online ? `linear-gradient(90deg, ${accent}, #3b82f6, ${accent}00)` : "linear-gradient(90deg, #374151, #37415100)", borderRadius: "12px 12px 0 0" }} />
@@ -93,8 +104,22 @@ export function VllmPanel({ data, engine, cacheHistory, reqHistory }: VllmPanelP
       {!online ? (
         <div style={{ color: "#334155", fontSize: 11, letterSpacing: "0.06em", padding: "20px 0", textAlign: "center" }}>
           ENGINE NOT RUNNING — CONTAINERS:{" "}
-          <span style={{ color: data.containers.head === "running" ? "#10b981" : "#ef4444" }}>HEAD:{data.containers.head.toUpperCase()}</span>{" "}
-          <span style={{ color: data.containers.worker === "running" ? "#10b981" : "#ef4444" }}>WORKER:{data.containers.worker.toUpperCase()}</span>
+          {roster.map((c, i) => {
+            const st = stateOf(c.key);
+            return (
+              <span key={c.key}>
+                {i > 0 && " "}
+                <span style={{ color: st === "running" ? "#10b981" : "#ef4444" }}>
+                  {c.label.toUpperCase()}:{st.toUpperCase()}
+                </span>
+              </span>
+            );
+          })}
+          {engine.note && (
+            <div style={{ marginTop: 10, fontSize: 10, letterSpacing: "0.02em", color: "#f59e0b" }}>
+              {engine.note}
+            </div>
+          )}
         </div>
       ) : (
         <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-start" }}>
@@ -105,9 +130,40 @@ export function VllmPanel({ data, engine, cacheHistory, reqHistory }: VllmPanelP
               <Row k="CONTEXT" v={`${data.maxModelLen?.toLocaleString() ?? "—"} tok`} color="#a78bfa" />
               <Row k="PARALLEL" v={engine.parallel} />
               <Row k="NODES" v={engine.topology} />
+              {engine.headNode && <Row k="HEAD NODE" v={engine.headNode} color="#22d3ee" />}
               <Row k="KV DTYPE" v={engine.kvDtype} color="#22d3ee" />
               <Row k="PORT" v={String(engine.port || "—")} />
             </div>
+
+            {/* Per-rank container roster — one line per engine container. */}
+            {roster.length > 0 && (
+              <div style={{ marginTop: 10, borderTop: "1px solid #1a2540", paddingTop: 8 }}>
+                <div style={{ fontSize: 9, color: "#475569", letterSpacing: "0.12em", marginBottom: 5, textTransform: "uppercase" }}>
+                  Containers ({roster.length})
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                  {roster.map((c) => {
+                    const st = stateOf(c.key);
+                    return (
+                      <div key={c.key} style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+                        <span style={{ fontSize: 10, color: "#64748b" }}>
+                          rank{c.rank ?? "?"} · {c.node ?? "?"}
+                        </span>
+                        <span
+                          style={{
+                            fontSize: 10,
+                            fontWeight: 700,
+                            color: st === "running" ? "#10b981" : st === "exited" ? "#f59e0b" : "#ef4444",
+                          }}
+                        >
+                          {c.name ?? c.key} {st.toUpperCase()}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
 
           {data.metrics ? (

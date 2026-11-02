@@ -18,25 +18,25 @@ import { BenchmarksPanel } from "@/components/BenchmarksPanel";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface GpuData {
-  name: string;
-  memTotal: number;
-  memUsed: number;
-  util: number;
-  temp: number;
-  powerW: number;
+  name: string | null;
+  memTotal: number | null;
+  memUsed: number | null;
+  util: number | null;
+  temp: number | null;
+  powerW: number | null;
 }
 
 interface NodeData {
   hostname: string;
   online: boolean;
-  cpuPct: number;
-  cpuCores: number;
+  cpuPct: number | null;
+  cpuCores: number | null;
   memTotal: number;
-  memUsed: number;
-  diskTotal: number;
-  diskUsed: number;
-  loadAvg: [number, number, number];
-  uptime: number;
+  memUsed: number | null;
+  diskTotal: number | null;
+  diskUsed: number | null;
+  loadAvg: [number, number, number] | null;
+  uptime: number | null;
   gpu: GpuData;
 }
 
@@ -67,7 +67,11 @@ interface EngineData {
   topology: string;
   parallel: string;
   kvDtype: string;
-  containers: { key: string; label: string }[];
+  containers: { key: string; label: string; name?: string; node?: string | null; rank?: number | null }[];
+  headNode?: string | null;
+  nodes?: string[];
+  detected?: boolean;
+  note?: string | null;
 }
 
 const EMPTY_ENGINE: EngineData = {
@@ -86,6 +90,7 @@ interface DownloadData {
 interface ClusterData {
   ts: number;
   nodes: { spark1: NodeData | null; spark2: NodeData | null; spark3: NodeData | null; spark4: NodeData | null };
+  nodeErrors?: { spark1: string | null; spark2: string | null; spark3: string | null; spark4: string | null };
   engine: EngineData;
   vllm: VllmData;
   downloads: DownloadData[];
@@ -444,6 +449,7 @@ export default function DashPage() {
             ]}
             headUptimeSec={data?.vllm.headUptimeSec ?? null}
             singleNode={singleNodeMode}
+            engineLabel={data?.engine.label ?? "—"}
           />
         </section>
 
@@ -474,6 +480,7 @@ export default function DashPage() {
                   ip={displayAddr("spark1")}
                   data={data?.nodes.spark1 ?? null}
                   history={history.spark1}
+                  error={data?.nodeErrors?.spark1 ?? null}
                 />
                 {singleNodeMode ? (
                   <SystemTasksPanel data={tasksData} loading={tasksLoading} singleNode />
@@ -485,6 +492,7 @@ export default function DashPage() {
                       ip={displayAddr("spark2")}
                       data={data?.nodes.spark2 ?? null}
                       history={history.spark2}
+                      error={data?.nodeErrors?.spark2 ?? null}
                     />
                     <NodeCard
                       label="SPARK3"
@@ -492,6 +500,7 @@ export default function DashPage() {
                       ip={displayAddr("spark3")}
                       data={data?.nodes.spark3 ?? null}
                       history={history.spark3}
+                      error={data?.nodeErrors?.spark3 ?? null}
                     />
                     <NodeCard
                       label="SPARK4"
@@ -499,6 +508,7 @@ export default function DashPage() {
                       ip={displayAddr("spark4")}
                       data={data?.nodes.spark4 ?? null}
                       history={history.spark4}
+                      error={data?.nodeErrors?.spark4 ?? null}
                     />
                   </>
                 )}

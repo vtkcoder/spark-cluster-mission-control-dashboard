@@ -1,117 +1,62 @@
-import { exec } from "child_process";
-import { promisify } from "util";
-import { writeFileSync, existsSync } from "fs";
 import { NextResponse } from "next/server";
-import { detectEngine, getEngineModels, getEngineMetrics, getSglangThroughput, NODE_SSH_HOST, SPARK1_HOST, sshCommand } from "@/lib/engine";
+import {
+  detectEngine,
+  getEngineModels,
+  getEngineMetrics,
+  getSglangThroughput,
+  NODE_SSH_HOST,
+  SPARK1_HOST,
+  runRemote,
+} from "@/lib/engine";
+import {
+  COLLECTOR_CMD,
+  parseCollectorOutput,
+  pickRxInterface,
+  toNodeData,
+  type NodeData,
+  type NodeRaw,
+} from "@/lib/node-collector";
 
 export const dynamic = "force-dynamic";
 
-const execAsync = promisify(exec);
-
-// ── Python collector – written to disk once ──────────────────────────────────
-const COLLECTOR_PATH = "/tmp/spark_collector.py";
-const COLLECTOR_SRC = `
-from nvitop import Device
-import json, os, subprocess, time
-
-def get_cpu_pct():
-    def read():
-        with open('/proc/stat') as f:
-            return list(map(int, f.readline().split()[1:8]))
-    v1 = read(); time.sleep(0.35); v2 = read()
-    total = sum(v2) - sum(v1)
-    return round(100.0*(1.0-(v2[3]-v1[3])/total),1) if total>0 else 0.0
-
-mem={}
-with open('/proc/meminfo') as f:
-    for line in f:
-        p=line.split(':',1)
-        if len(p)==2: mem[p[0].strip()]=int(p[1].split()[0])*1024
-
-df=subprocess.check_output(['df','-B1','/'],text=True).strip().split('\\n')[1].split()
-la=os.getloadavg()
-uptime=float(open('/proc/uptime').read().split()[0])
-nproc=int(subprocess.check_output(['nproc']).strip())
-hostname=subprocess.check_output(['hostname']).decode().strip()
-gpu=Device.all()[0]
-
-print(json.dumps({
-    'hostname':hostname,
-    'cpu_pct':get_cpu_pct(),
-    'cpu_cores':nproc,
-    'mem_total':mem.get('MemTotal',0),
-    'mem_available':mem.get('MemAvailable',0),
-    'disk_total':int(df[1]),
-    'disk_used':int(df[2]),
-    'load_avg':[round(la[0],2),round(la[1],2),round(la[2],2)],
-    'uptime':uptime,
-    'gpu_name':gpu.name(),
-    'gpu_mem_total':gpu.memory_total() or 0,
-    'gpu_mem_used':gpu.memory_used() or 0,
-    'gpu_util':gpu.gpu_utilization() or 0,
-    'gpu_temp':gpu.temperature() or 0,
-    'gpu_power_mw':gpu.power_usage() or 0,
-}))
-`.trim();
-
-if (!existsSync(COLLECTOR_PATH)) {
-  writeFileSync(COLLECTOR_PATH, COLLECTOR_SRC, { mode: 0o644 });
-}
-
-// ── Type definitions ──────────────────────────────────────────────────────────
-interface NodeRaw {
-  hostname: string;
-  cpu_pct: number;
-  cpu_cores: number;
-  mem_total: number;
-  mem_available: number;
-  disk_total: number;
-  disk_used: number;
-  load_avg: [number, number, number];
-  uptime: number;
-  gpu_name: string;
-  gpu_mem_total: number;
-  gpu_mem_used: number;
-  gpu_util: number;
-  gpu_temp: number;
-  gpu_power_mw: number;
-}
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
-async function getNodeStats(host?: string): Promise<NodeRaw | null> {
+interface NodeResult {
+  data: NodeData | null;
+  error: string | null;
+}
+
+async function getNodeStats(host?: string): Promise<NodeResult> {
+  const res = await runRemote(COLLECTOR_CMD, host, 8000);
+  if (!res.ok) {
+    return { data: null, error: res.error ?? "ssh failed" };
+  }
+  const parsed = parseCollectorOutput(res.stdout);
+  if ("error" in parsed) {
+    return { data: null, error: parsed.error };
+  }
   try {
-    const cmd = host
-      ? `${sshCommand("python3 /dev/stdin", host)} < ${COLLECTOR_PATH}`
-      : `python3 ${COLLECTOR_PATH}`;
-    const { stdout } = await execAsync(cmd, { timeout: 6000 });
-    return JSON.parse(stdout.trim()) as NodeRaw;
-  } catch {
-    return null;
+    return { data: toNodeData(parsed.raw as NodeRaw), error: null };
+  } catch (e) {
+    return { data: null, error: `collector payload rejected: ${(e as Error).message}` };
   }
 }
 
 async function getDockerStatus(container: string, host?: string): Promise<string> {
-  try {
-    const inspect = `docker inspect ${container} --format '{{.State.Status}}' 2>/dev/null || echo absent`;
-    const cmd = host ? sshCommand(inspect, host) : inspect;
-    const { stdout } = await execAsync(cmd, { timeout: 4000 });
-    return stdout.trim() || "absent";
-  } catch {
-    return "absent";
-  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(container)) return "absent";
+  const inspect = `docker inspect ${container} --format '{{.State.Status}}' 2>/dev/null || echo absent`;
+  const res = await runRemote(inspect, host, 4000);
+  if (!res.ok) return "absent";
+  return res.stdout.trim() || "absent";
 }
 
 async function getDockerUptime(container: string, host?: string): Promise<number | null> {
-  try {
-    const inspect = `docker inspect ${container} --format '{{.State.StartedAt}}' 2>/dev/null`;
-    const cmd = host ? sshCommand(inspect, host) : inspect;
-    const { stdout } = await execAsync(cmd, { timeout: 4000 });
-    const started = stdout.trim();
-    if (!started) return null;
-    return (Date.now() - new Date(started).getTime()) / 1000;
-  } catch {
-    return null;
-  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(container)) return null;
+  const inspect = `docker inspect ${container} --format '{{.State.StartedAt}}' 2>/dev/null`;
+  const res = await runRemote(inspect, host, 4000);
+  if (!res.ok) return null;
+  const started = res.stdout.trim();
+  if (!started) return null;
+  return (Date.now() - new Date(started).getTime()) / 1000;
 }
 
 /**
@@ -140,9 +85,9 @@ async function scanHfCache(
     `done`,
   ].join("\n");
   try {
-    const full = host ? sshCommand(inner, host, 5) : inner;
-    const { stdout } = await execAsync(full, { timeout: 60000, maxBuffer: 4 * 1024 * 1024 });
-    return stdout
+    const res = await runRemote(inner, host, 60000);
+    if (!res.ok) return [];
+    return res.stdout
       .split("\n")
       .map((l) => l.split("\t"))
       .filter((p) => p.length === 3 && p[0].startsWith("models--"))
@@ -179,18 +124,9 @@ function hfCacheSnapshot(root: string, host?: string): HfEntry[] {
   return hfScan.entries;
 }
 
-async function getNetworkRx(iface: string, host?: string): Promise<number> {
-  try {
-    const cmd = `cat /proc/net/dev | grep '${iface}' | awk '{print $2}'`;
-    const full = host ? sshCommand(cmd, host) : cmd;
-    const { stdout } = await execAsync(full, { timeout: 2000 });
-    return parseInt(stdout.trim()) || 0;
-  } catch {
-    return 0;
-  }
-}
-
 // ── Download speed tracking (module-level cache) ──────────────────────────────
+// The RX counters come from the node collector itself (it already reads
+// /proc/net/dev), so no extra ssh round-trip is needed per poll.
 let prevRx: { spark1: number; spark2: number; ts: number } | null = null;
 
 // ── HF cache config ───────────────────────────────────────────────────────────
@@ -247,8 +183,6 @@ export async function GET() {
     worker3Status,
     webuiStatus,
     headUptime,
-    s1RxBytes,
-    s2RxBytes,
   ] = await Promise.all([
     getNodeStats(SPARK1_HOST),
     getNodeStats(NODE_SSH_HOST.spark2),
@@ -263,12 +197,18 @@ export async function GET() {
     w3Spec ? getDockerStatus(w3Spec.name, w3Spec.host) : Promise.resolve("absent"),
     getDockerStatus("open-webui", SPARK1_HOST),
     getDockerUptime(headSpec.name, headSpec.host),
-    getNetworkRx(NET_IFACE, SPARK1_HOST),
-    getNetworkRx(NET_IFACE, NODE_SSH_HOST.spark2),
   ]);
 
-  // Network speed (bytes/sec since last poll) — applies to whichever model is active
+  // Network speed (bytes/sec since last poll) — applies to whichever model is
+  // active. The counters come from the collector's /proc/net/dev snapshot.
   const now = Date.now();
+  const rxOf = (n: NodeResult) => {
+    if (!n.data) return 0;
+    const pick = pickRxInterface(n.data.netRx, NET_IFACE);
+    return pick ? pick.bytes : 0;
+  };
+  const s1RxBytes = rxOf(spark1);
+  const s2RxBytes = rxOf(spark2);
   let dlSpeedS1 = 0;
   if (prevRx) {
     const dt = (now - prevRx.ts) / 1000;
@@ -287,37 +227,21 @@ export async function GET() {
       dlSpeedS2: 0,
     }));
 
-  const mkNode = (n: NodeRaw | null) =>
-    n
-      ? {
-          hostname: n.hostname,
-          online: true,
-          cpuPct: n.cpu_pct,
-          cpuCores: n.cpu_cores,
-          memTotal: n.mem_total,
-          memUsed: n.mem_total - n.mem_available,
-          diskTotal: n.disk_total,
-          diskUsed: n.disk_used,
-          loadAvg: n.load_avg,
-          uptime: n.uptime,
-          gpu: {
-            name: n.gpu_name,
-            memTotal: n.gpu_mem_total,
-            memUsed: n.gpu_mem_used,
-            util: n.gpu_util,
-            temp: n.gpu_temp,
-            powerW: n.gpu_power_mw / 1000,
-          },
-        }
-      : null;
-
   return NextResponse.json({
     ts: now,
     nodes: {
-      spark1: mkNode(spark1),
-      spark2: mkNode(spark2),
-      spark3: mkNode(spark3),
-      spark4: mkNode(spark4),
+      spark1: spark1.data,
+      spark2: spark2.data,
+      spark3: spark3.data,
+      spark4: spark4.data,
+    },
+    // Why a node has no data. null = collected fine. A node with an error is
+    // shown as OFFLINE with the reason instead of a silent zero-filled card.
+    nodeErrors: {
+      spark1: spark1.error,
+      spark2: spark2.error,
+      spark3: spark3.error,
+      spark4: spark4.error,
     },
     // Active-engine descriptor — drives engine-aware labels/topology in the UI.
     engine: {
@@ -327,7 +251,17 @@ export async function GET() {
       topology: engine.topology,
       parallel: engine.parallel,
       kvDtype: engine.kvDtype,
-      containers: engine.containers.map((c) => ({ key: c.key, label: c.label })),
+      headNode: engine.headNode ?? null,
+      nodes: engine.nodes ?? [],
+      detected: engine.detected !== false,
+      note: engine.note ?? null,
+      containers: engine.containers.map((c) => ({
+        key: c.key,
+        label: c.label,
+        name: c.name,
+        node: c.node ?? null,
+        rank: c.rank ?? null,
+      })),
     },
     // `vllm` key kept for backward-compat; now reflects WHICHEVER engine is live.
     vllm: {

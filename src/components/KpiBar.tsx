@@ -50,6 +50,8 @@ interface KpiBarProps {
   gpuTemps: Array<number | null>;
   headUptimeSec: number | null;
   singleNode?: boolean;
+  /** Label of the live inference engine ("vLLM" / "SGLang"). */
+  engineLabel?: string;
 }
 
 function containerLabel(s: string): string {
@@ -91,7 +93,11 @@ export function KpiBar({
   gpuTemps,
   headUptimeSec,
   singleNode = false,
+  engineLabel = "vLLM",
 }: KpiBarProps) {
+  // The engine label is whatever is actually running (vLLM / SGLang) — the
+  // chips used to hardcode "VLLM HEAD" even while SGLang served the cluster.
+  const engineTag = engineLabel.replace(/[^A-Za-z]/g, "").toUpperCase() || "ENGINE";
   // Average GPU temp across all present (non-null) nodes. In single-node mode
   // only spark1 (gpuTemps[0]) is considered.
   const tempSamples = (singleNode ? gpuTemps.slice(0, 1) : gpuTemps).filter(
@@ -119,13 +125,13 @@ export function KpiBar({
         color={nodesOnline === nodesTotal ? "#10b981" : "#ef4444"}
       />
       <KpiChip
-        label={singleNode ? "VLLM" : "VLLM HEAD"}
+        label={singleNode ? engineTag : `${engineTag} HEAD`}
         value={containerLabel(headContainer)}
         color={containerColor(headContainer)}
       />
       {!singleNode && (
         <KpiChip
-          label="VLLM WORKER"
+          label={`${engineTag} WORKER`}
           value={containerLabel(workerContainer)}
           color={containerColor(workerContainer)}
         />
